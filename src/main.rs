@@ -13,6 +13,7 @@ use tracing::{info, error, warn};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct Event {
+    id: u64,
     #[serde(rename = "globalID")]
     global_id: u64,
     #[serde(rename = "type")]
@@ -244,13 +245,13 @@ async fn run() -> Result<()> {
             Ok(response) => {
                 if let Ok(events) = response.json::<Vec<Event>>().await {
                     for event in events {
-                        let gid = event.global_id;
+                        let current_local_id = event.id;
                         if let Err(e) = process_event(&event, &cfg, &folders_map, &mut redis_conn).await {
-                            error!("Event {} error: {}. Moving to retry queue.", gid, e);
+                            error!("Event {} (GlobalID: {}) error: {}. Moving to retry queue.", current_local_id, event.global_id, e);
                             let serialized = serde_json::to_string(&event)?;
-                            let _: () = redis_conn.hset("retry_queue", gid.to_string(), serialized).await?;
+                            let _: () = redis_conn.hset("retry_queue", current_local_id.to_string(), serialized).await?;
                         }
-                        last_id = gid;
+                        last_id = current_local_id;
                         let _: () = redis_conn.set("last_event_id", last_id).await?;
                     }
                 }
