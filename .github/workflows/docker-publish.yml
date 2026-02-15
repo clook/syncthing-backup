@@ -30,6 +30,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # --- Step 1: push builder image (for debug) ---
+      - name: Build and push build-env
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: builder
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: clook/syncthing-backup:build-cache
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Step 2: push final image ---
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
