@@ -77,7 +77,6 @@ fn files_are_identical_sync(path_a: &Path, path_b: &Path) -> Result<bool> {
 
     let mut r1 = BufReader::new(File::open(path_a)?);
     let mut r2 = BufReader::new(File::open(path_b)?);
-
     let mut buf1 = [0u8; 1024 * 512]; // 512KB for HDD sequential access
     let mut buf2 = [0u8; 1024 * 512];
 
@@ -132,7 +131,7 @@ async fn process_event(
     event: &Event, 
     cfg: &AppConfig, 
     folders: &HashMap<String, PathBuf>, 
-    redis: &mut redis::aio::Connection
+    redis: &mut redis::aio::ConnectionManager
 ) -> Result<()> {
     if event.event_type != "ItemFinished" { return Ok(()); }
     let data = match &event.data {
@@ -201,7 +200,10 @@ async fn run() -> Result<()> {
 
     let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "localhost".into());
     let redis_client = redis::Client::open(format!("redis://{}/", redis_host))?;
-    let mut redis_conn = redis_client.get_async_connection().await.context("Failed to connect to Redis")?;
+
+    // ConnectionManager setup for Redis 1.0.3
+    let mut redis_conn = redis::aio::ConnectionManager::new(redis_client).await
+        .context("Failed to create Redis connection manager")?;
     
     let http_client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
 
