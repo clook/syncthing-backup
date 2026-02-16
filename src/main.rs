@@ -243,7 +243,7 @@ async fn run() -> Result<()> {
     info!("Entering main loop at Event ID: {}", last_id);
 
     loop {
-        let url = format!("{}/rest/events?since={}&limit=10&timeout=25", cfg.st_url, last_id);
+        let url = format!("{}/rest/events?since={}&timeout=25", cfg.st_url, last_id);
         let res = http_client.get(&url).header("X-API-Key", &cfg.st_api_key).send().await;
 
         match res {
