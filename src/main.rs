@@ -231,7 +231,9 @@ async fn run() -> Result<()> {
         for (id, json) in retry_map {
             if let Ok(ev) = serde_json::from_str::<Event>(&json) {
                 info!("Retrying event ID: {}", id);
-                let _ = process_event(&ev, &cfg, &folders_map, &mut redis_conn).await;
+                if let Err(e) = process_event(&ev, &cfg, &folders_map, &mut redis_conn).await {
+                    error!("Event {} (GlobalID: {}) error: {}. Moving to retry queue.", ev.id, ev.global_id, e);
+                }
             }
         }
     }
