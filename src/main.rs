@@ -231,7 +231,9 @@ async fn run() -> Result<()> {
         for (id, json) in retry_map {
             if let Ok(ev) = serde_json::from_str::<Event>(&json) {
                 info!("Retrying event ID: {}", id);
-                let _ = process_event(&ev, &cfg, &folders_map, &mut redis_conn).await;
+                if let Err(e) = process_event(&ev, &cfg, &folders_map, &mut redis_conn).await {
+                    error!("Event {} (GlobalID: {}) error: {}. Moving to retry queue.", ev.id, ev.global_id, e);
+                }
             }
         }
     }
@@ -243,7 +245,7 @@ async fn run() -> Result<()> {
     info!("Entering main loop at Event ID: {}", last_id);
 
     loop {
-        let url = format!("{}/rest/events?since={}&limit=10&timeout=25", cfg.st_url, last_id);
+        let url = format!("{}/rest/events?since={}&timeout=25", cfg.st_url, last_id);
         let res = http_client.get(&url).header("X-API-Key", &cfg.st_api_key).send().await;
 
         match res {
