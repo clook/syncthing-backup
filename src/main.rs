@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -18,16 +19,17 @@ struct Event {
     global_id: u64,
     #[serde(rename = "type")]
     event_type: String,
-    data: Option<EventData>,
+    data: Option<Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct EventData {
+#[derive(Debug, Deserialize)]
+struct ItemFinishedData {
     item: String,
     folder: String,
     action: String,
     #[serde(rename = "type")]
     item_type: String,
+    error: Option<Value>, // Syncthing met null ou une chaîne si erreur
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,44 +136,47 @@ async fn process_event(
     folders: &HashMap<String, PathBuf>, 
     redis: &mut redis::aio::ConnectionManager
 ) -> Result<()> {
-    if event.event_type != "ItemFinished" { return Ok(()); }
-    let data = match &event.data {
-        Some(d) if d.action == "update" && d.item_type == "file" => d,
-        _ => return Ok(()),
-    };
+    if event.event_type == "ItemFinished" {
+        if let Some(raw_data) = &event.data {
+            if let Ok(data) = serde_json::from_value::<ItemFinishedData>(raw_data.clone()) {
+                if data.item_type == "file" && data.action == "update" && data.error.is_none() {
+                    let rel_path = folders.get(&data.folder).context("Folder ID mapping missing")?;
+                        let src = cfg.src_dir.join(rel_path).join(&data.item);
+                        let dst = cfg.dst_dir.join(rel_path).join(&data.item);
 
-    let rel_path = folders.get(&data.folder).context("Folder ID mapping missing")?;
-    let src = cfg.src_dir.join(rel_path).join(&data.item);
-    let dst = cfg.dst_dir.join(rel_path).join(&data.item);
+                        if let Some(w) = &cfg.witness_file {
+                            if !cfg.dst_dir.join(w).exists() {
+                                return Err(anyhow!("Mount witness missing: {:?}", w));
+                            }
+                        }
 
-    if let Some(w) = &cfg.witness_file {
-        if !cfg.dst_dir.join(w).exists() {
-            return Err(anyhow!("Mount witness missing: {:?}", w));
-        }
-    }
-
-    if src.exists() {
-        let action = determine_action(&src, &dst, &cfg.strategy).await?;
+                    if src.exists() {
+                        let action = determine_action(&src, &dst, &cfg.strategy).await?;
         
-        match action {
-            BackupAction::Skip => info!("Skipped: {:?}", data.item),
-            BackupAction::DeleteSource => {
-                info!("File identical at destination. Purging source: {:?}", data.item);
-                if !cfg.dry_run { fs::remove_file(&src).await?; }
-            },
-            BackupAction::MoveTo(final_dst) => {
-                info!("Moving {:?} to {:?}", data.item, final_dst);
-                if !cfg.dry_run {
-                    if let Some(p) = final_dst.parent() { fs::create_dir_all(p).await?; }
-                    if fs::rename(&src, &final_dst).await.is_err() {
-                        fs::copy(&src, &final_dst).await?;
-                        fs::remove_file(&src).await?;
+                        match action {
+                            BackupAction::Skip => info!("Skipped: {:?}", data.item),
+                            BackupAction::DeleteSource => {
+                                info!("File identical at destination. Purging source: {:?}", data.item);
+                                if !cfg.dry_run { fs::remove_file(&src).await?; }
+                            },
+                            BackupAction::MoveTo(final_dst) => {
+                                info!("Moving {:?} to {:?}", data.item, final_dst);
+                                if !cfg.dry_run {
+                                    if let Some(p) = final_dst.parent() { fs::create_dir_all(p).await?; }
+                                    if fs::rename(&src, &final_dst).await.is_err() {
+                                        fs::copy(&src, &final_dst).await?;
+                                        fs::remove_file(&src).await?;
+                                    }
+                                }
+                            }
+                        }
+                        let _: () = redis.hdel("retry_queue", event.id.to_string()).await?;
                     }
                 }
             }
         }
-        let _: () = redis.hdel("retry_queue", event.global_id.to_string()).await?;
     }
+
     Ok(())
 }
 
@@ -252,7 +257,8 @@ async fn run() -> Result<()> {
                             let _: () = redis_conn.hset("retry_queue", current_local_id.to_string(), serialized).await?;
                         }
                         last_id = current_local_id;
-                        let _: () = redis_conn.set("last_event_id", last_id).await?;
+                        let _: () = redis_conn.set("last_event_id", last_id).await
+                            .context("Can't update last event id on Redis")?;
                     }
                 }
             },
