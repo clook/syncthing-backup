@@ -391,8 +391,8 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
                     .filter(|j| shared.push(j.clone()))
                     .count();
                 info!(
-                    "Scan: {} file(s) in source, {} newly queued, {} too recent, {} error(s)",
-                    found, added, r.deferred, r.errors
+                    "Scan: {} file(s) in source, {} newly queued, {} too recent, {} error(s), {} leftover(s)",
+                    found, added, r.deferred, r.errors, r.leftovers
                 );
                 if let Some(oldest) = r.oldest.filter(|o| *o > STALE_WARNING) {
                     warn!(

@@ -55,8 +55,8 @@ wait_until() { # wait_until <timeout_s> <description> <command...>
 
 src_files() { find "$SRV_FOLDER" -type f ! -path '*/.st*' ! -name '.syncthing.*' 2>/dev/null | wc -l; }
 src_empty() { [[ $(src_files) -eq 0 ]]; }
-hdd_count() { find "$HDD/phone/photos" -type f ! -name '.syncthing-backup.tmp' 2>/dev/null | wc -l; }
-porter_tmp_count() { find "$HDD" -name '.syncthing-backup.tmp' 2>/dev/null | wc -l; }
+hdd_count() { find "$HDD/phone/photos" -type f ! -name '.syncthing-backup-*.tmp' 2>/dev/null | wc -l; }
+porter_tmp_count() { find "$HDD" -name '.syncthing-backup-*.tmp' 2>/dev/null | wc -l; }
 
 start_syncthing() { # start_syncthing <name> <gui>
   "$ST" serve --home "$SRC_ROOT/home-$1" --no-browser --no-restart --no-upgrade \
@@ -114,7 +114,7 @@ scenario_burst() {
   mkfile "$PHONE/burst/big.bin" "$((BIG_MB * 1024 * 1024))"
   sha256sum "$PHONE/burst/big.bin" | cut -d' ' -f1 >"$LOG/big.sha"
   local end=$((SECONDS + 300))
-  until compgen -G "$HDD/phone/photos/burst/.syncthing-backup.tmp" >/dev/null; do
+  until compgen -G "$HDD/phone/photos/burst/.syncthing-backup-*.tmp" >/dev/null; do
     ((SECONDS < end)) || fail "timeout: big.bin copy never observed"
     sleep 0.01
   done
@@ -182,7 +182,7 @@ scenario_kill_copy() {
   wait_until 300 "kill.bin received by server" bash -c "[[ -f '$SRV_FOLDER/kill.bin' ]]"
   start_porter
   local end=$((SECONDS + 60))   # tight poll: the copy may only take a second or two
-  until compgen -G "$HDD/phone/photos/.syncthing-backup.tmp" >/dev/null; do
+  until compgen -G "$HDD/phone/photos/.syncthing-backup-*.tmp" >/dev/null; do
     ((SECONDS < end)) || fail "timeout: copy never observed in progress"
     sleep 0.01
   done
