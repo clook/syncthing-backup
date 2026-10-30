@@ -9,14 +9,11 @@ COPY . .
 RUN touch src/main.rs && cargo build --release
 
 
-FROM alpine:latest
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /usr/src/app/target/release/syncthing-backup .
-
-ENV REDIS_HOST=localhost
-ENV SYNCTHING_PORT=8384
 
 CMD ["./syncthing-backup"]
