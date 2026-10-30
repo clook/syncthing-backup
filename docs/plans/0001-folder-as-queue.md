@@ -58,7 +58,7 @@ The plan lives **in the repo**, not only in this session's plan file:
       slow fake mover.
 - [x] **T7** Remove Redis/`config` deps (done in T6), update the Dockerfile, bump to 0.3.0.
 - [x] **T8** Rewrite `README.md`.
-- [ ] **T9** Local end-to-end checks (Syncthing container, crash/restart, 1 GB + 100 small files burst).
+- [x] **T9** Local end-to-end checks (Syncthing container, crash/restart, 1 GB + 100 small files burst).
 - [ ] **T10** k3s deploy in dry run, then live. Mark the plan as done.
 
 ### CLAUDE.md content (concise)
@@ -197,3 +197,6 @@ Run checks after each task (and record the result in the plan's progress log):
 - 2026-10-30 — Round 6 (review of 139b163): an immediate re-queue of a file modified in place (same inode)
   could loop and write a new `_N` copy per pass. Fixed: only a replaced inode is re-queued at once, a
   modified file waits for a scan (MIN_AGE_SECS). Creation-time comment corrected (not available on musl).
+- 2026-10-30 — Review record docs/reviews/0001-R1-T2-T8.md (rounds 1–6, Reviewed-Commit 6b5ea5b) with
+  review.sh and e2e logs. T9 done: e2e Receive Only 7/7 at 139b163. Next: user approval of 0010, push,
+  T10 (k3s dry run).
