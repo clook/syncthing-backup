@@ -40,6 +40,9 @@ The plan lives **in the repo**, not only in this session's plan file:
 - [x] **T1** Create `docs/plans/0001-folder-as-queue.md` (this plan + checklist + progress log), create
       `CLAUDE.md`, create the branch, and commit the existing uncommitted `fetch_folders` refactor as the
       baseline.
+- [x] **T1b** Review harness (user request): `scripts/review.sh`, `scripts/check-reviewed.sh`,
+      `.githooks/pre-push`, `.github/workflows/ci.yml`, `docs/reviews/`, process described in `CLAUDE.md`.
+      Review sets: **R1** = T2–T6 (core rework), **R2** = T7–T8. Each set is reviewed before it is pushed.
 - [ ] **T2** `config.rs`: new and removed env vars, warnings for obsolete ones.
 - [ ] **T3** `syncthing.rs`: folders (+ `paused`, `FOLDER_IDS`), event polling with status checks and
       backoff, `startTime`.
@@ -159,3 +162,4 @@ Run checks after each task (and record the result in the plan's progress log):
 ## Progress log
 
 - 2026-10-30 — Plan agreed. T1: plan + CLAUDE.md added, baseline commit 1057e25 (fetch_folders refactor).
+- 2026-10-30 — T1b: review harness added (user asked for a review gate before any push).
