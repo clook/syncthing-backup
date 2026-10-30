@@ -70,6 +70,27 @@ struct AppConfig {
 
 // --- Logic Layer (The "Brain") ---
 
+/// Fetches the current folder list from Syncthing and maps IDs to relative paths
+async fn fetch_folders(
+    http_client: &reqwest::Client,
+    cfg: &AppConfig,
+) -> Result<HashMap<String, PathBuf>> {
+    info!("Refreshing Syncthing folder mapping...");
+    
+    let st_cfg: SyncthingConfig = http_client.get(format!("{}/rest/system/config", cfg.st_url))
+        .header("X-API-Key", &cfg.st_api_key).send().await?.json().await?;
+
+    let mut folders_map = HashMap::new();
+    for f in st_cfg.folders {
+        // Calculate relative path by removing the Syncthing storage root prefix
+        if let Ok(rel) = PathBuf::from(&f.path).strip_prefix(&cfg.st_storage_dir) {
+            folders_map.insert(f.id, rel.to_path_buf());
+        }
+    }
+    info!("Successfully mapped {} folders.", folders_map.len());
+    Ok(folders_map)
+}
+
 fn files_are_identical_sync(path_a: &Path, path_b: &Path) -> Result<bool> {
     let meta_a = std::fs::metadata(path_a)?;
     let meta_b = std::fs::metadata(path_b)?;
@@ -213,16 +234,8 @@ async fn run() -> Result<()> {
     
     let http_client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
 
-    info!("Fetching folder configuration from Syncthing...");
-    let st_cfg: SyncthingConfig = http_client.get(format!("{}/rest/system/config", cfg.st_url))
-        .header("X-API-Key", &cfg.st_api_key).send().await?.json().await?;
-    
-    let mut folders_map = HashMap::new();
-    for f in st_cfg.folders {
-        if let Ok(rel) = PathBuf::from(&f.path).strip_prefix(&cfg.st_storage_dir) {
-            folders_map.insert(f.id, rel.to_path_buf());
-        }
-    }
+    // Initial folder scan
+    let mut folders_map = fetch_folders(&http_client, &cfg).await?;
 
     // 1. Retry Queue
     let retry_map: HashMap<String, String> = redis_conn.hgetall("retry_queue").await.unwrap_or_default();
@@ -253,10 +266,21 @@ async fn run() -> Result<()> {
                 if let Ok(events) = response.json::<Vec<Event>>().await {
                     for event in events {
                         let current_local_id = event.id;
-                        if let Err(e) = process_event(&event, &cfg, &folders_map, &mut redis_conn).await {
-                            error!("Event {} (GlobalID: {}) error: {}. Moving to retry queue.", current_local_id, event.global_id, e);
-                            let serialized = serde_json::to_string(&event)?;
-                            let _: () = redis_conn.hset("retry_queue", current_local_id.to_string(), serialized).await?;
+                        match event.event_type.as_str() {
+                            "ItemFinished" => {
+                                if let Err(e) = process_event(&event, &cfg, &folders_map, &mut redis_conn).await {
+                                    error!("Event {} (GlobalID: {}) error: {}. Moving to retry queue.", current_local_id, event.global_id, e);
+                                    let serialized = serde_json::to_string(&event)?;
+                                    let _: () = redis_conn.hset("retry_queue", current_local_id.to_string(), serialized).await?;
+                                }
+                            },
+                            "ConfigSaved" => {
+                                // If Syncthing config changes, refresh our folder mapping immediately
+                                if let Ok(new_map) = fetch_folders(&http_client, &cfg).await {
+                                    folders_map = new_map;
+                                }
+                            },
+                            _ => {} // Ignore other events
                         }
                         last_id = current_local_id;
                         let _: () = redis_conn.set("last_event_id", last_id).await
