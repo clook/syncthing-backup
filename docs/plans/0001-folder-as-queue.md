@@ -48,13 +48,13 @@ The plan lives **in the repo**, not only in this session's plan file:
 - [x] **T1c** Decision records with evidence (user request): `docs/decisions/` 0001–0007, rules in
       `CLAUDE.md`. Removing the Redis/`config` deps moves from T7 to T6 (review.sh checks "no Redis", and R1
       covers T2–T6).
-- [ ] **T2** `config.rs`: new and removed env vars, warnings for obsolete ones.
-- [ ] **T3** `syncthing.rs`: folders (+ `paused`, `FOLDER_IDS`), event polling with status checks and
+- [x] **T2** `config.rs`: new and removed env vars, warnings for obsolete ones.
+- [x] **T3** `syncthing.rs`: folders (+ `paused`, `FOLDER_IDS`), event polling with status checks and
       backoff, `startTime`.
-- [ ] **T4** `mover.rs` + unit tests: suffix conflicts, dedup, no-replace link, durable copy, verify, mtime,
+- [x] **T4** `mover.rs` + unit tests: suffix conflicts, dedup, no-replace link, durable copy, verify, mtime,
       witness, dry run.
-- [ ] **T5** `scanner.rs` + tests for the ignore rules.
-- [ ] **T6** `main.rs`: pending set, single worker, event task, scan task, drain-then-rescan, test with a
+- [x] **T5** `scanner.rs` + tests for the ignore rules.
+- [x] **T6** `main.rs`: pending set, single worker, event task, scan task, drain-then-rescan, test with a
       slow fake mover.
 - [ ] **T7** Remove Redis/`config` deps, update the Dockerfile, bump to 0.3.0.
 - [ ] **T8** Rewrite `README.md`.
@@ -175,3 +175,9 @@ Run checks after each task (and record the result in the plan's progress log):
 - 2026-10-30 — T1c: decision records added. Syncthing source checked (pinned ed38528): event IDs are
   per-subscription, in memory only, with a 1000-event buffer. This corrects the plan draft, which said gaps
   could not be detected with a filter. Gap detection added (decision 0003).
+- 2026-10-30 — T2–T6 implemented: 22 unit tests, and scripts/review.sh passes (clippy collapsible_if fixed
+  with clippy --fix). Differences from the plan: the source dir is not fsynced after the source is removed
+  (if a crash brings the file back, the next pass sees it as a duplicate, which is harmless); before
+  removing the source, the mover checks it is still the same inode, size and mtime that was copied, so a
+  newer version renamed in by Syncthing is never deleted; SIGTERM lets the current file finish. Next: R1
+  review.
