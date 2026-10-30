@@ -63,13 +63,23 @@ impl Shared {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues a job unless that source is already queued. If it is being processed, it is queued
-    /// again when the current attempt ends. Never blocks on I/O, so producers keep up while the
-    /// worker copies a large file.
+    /// Queues a job found by a scan, unless that source is already queued or in progress. Never
+    /// blocks on I/O, so producers keep up while the worker copies a large file.
     fn push(&self, job: Job) -> bool {
+        self.push_inner(job, false)
+    }
+
+    /// Queues a job announced by Syncthing. If that file is being processed, a newer version may
+    /// have arrived: it is queued again when the current attempt ends. (Scans do not do this, so
+    /// a failing file is only retried on the next scan, never in a loop.)
+    fn push_event(&self, job: Job) -> bool {
+        self.push_inner(job, true)
+    }
+
+    fn push_inner(&self, job: Job, rerun_if_in_progress: bool) -> bool {
         let mut q = self.lock();
         if q.in_progress.as_ref().is_some_and(|j| j.src == job.src) {
-            q.rerun = true;
+            q.rerun |= rerun_if_in_progress;
             return false;
         }
         if !q.queued.insert(job.src.clone()) {
@@ -287,7 +297,7 @@ async fn run_events(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared
                         info!("Syncthing configuration changed; refreshing folders");
                         shared.rescan.notify_one();
                     } else if let Some(job) = job_from_event(event, &folders, &cfg)
-                        && shared.push(job.clone())
+                        && shared.push_event(job.clone())
                     {
                         info!("Queued {:?} ({} pending)", job.src, shared.len());
                     }
@@ -341,7 +351,6 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
             return;
         }
 
-        let mut retry_soon = false;
         match client.folders(&cfg).await {
             Ok(map) => {
                 if map != shared.folders() {
@@ -349,13 +358,10 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
                     shared.set_folders(map);
                 }
             }
-            Err(e) => {
-                warn!(
-                    "Cannot refresh folders, keeping the previous mapping: {:#}",
-                    e
-                );
-                retry_soon = true;
-            }
+            Err(e) => warn!(
+                "Cannot refresh folders, keeping the previous mapping: {:#}",
+                e
+            ),
         }
         let folders = shared.folders();
         if folders.is_empty() {
@@ -369,7 +375,8 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
             scanner::scan(&src, &dst, &folders, min_age, SystemTime::now())
         })
         .await;
-        next = if retry_soon || shared.folders().is_empty() {
+        // Retry soon only while no mapping is known (e.g. Syncthing not up yet at startup).
+        next = if shared.folders().is_empty() {
             FOLDER_RETRY.min(cfg.scan_interval)
         } else {
             cfg.scan_interval
@@ -426,6 +433,7 @@ async fn run() -> Result<()> {
     let shared = Arc::new(Shared::new(FolderMap::new()));
 
     let opts = MoveOptions {
+        dst_root: cfg.dst_dir.clone(),
         witness,
         verify: cfg.verify_copy,
         dry_run: cfg.dry_run,
@@ -541,12 +549,18 @@ mod tests {
         assert!(!s.push(job("/a")));
         assert_eq!(s.pop(), Some(job("/a")));
         assert!(!s.push(job("/a")), "in-progress file is not queued twice");
+        s.done();
+        assert_eq!(s.len(), 0, "a scan never re-queues the file in progress");
+
+        assert!(s.push(job("/a")));
+        assert_eq!(s.pop(), Some(job("/a")));
+        assert!(!s.push_event(job("/a")));
         assert_eq!(s.len(), 0);
         s.done();
+        let requeued = s.len();
         assert_eq!(
-            s.len(),
-            1,
-            "announced while in progress: re-queued when done"
+            requeued, 1,
+            "announced by an event while in progress: re-queued"
         );
         assert_eq!(s.pop(), Some(job("/a")));
         s.done();
