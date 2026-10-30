@@ -2,12 +2,15 @@
 //! See docs/decisions/0004 (conflicts), 0006 and 0008 (durable move).
 
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Upper bound on `name_N.ext` candidates, to fail loudly instead of looping forever.
 const MAX_SUFFIX: u32 = 10_000;
@@ -16,6 +19,9 @@ const MAX_SUFFIX: u32 = 10_000;
 /// The random token makes a clash with a real file practically impossible.
 pub const TMP_NAME: &str = ".syncthing-backup-7f3a9c2e.tmp";
 const NAME_MAX: usize = 255;
+/// Prefix of the private name a source file gets for the instant between its check and removal.
+/// Only left behind by a crash or a failed put-back; the scanner reports such files.
+pub const REMOVING_PREFIX: &str = ".syncthing-backup-removing-";
 
 /// A source file and where it belongs in the backup.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -95,7 +101,7 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
         r => r.with_context(|| format!("open {:?}", job.src))?,
     };
     let src_meta = src_file.metadata()?;
-    if src_meta.ino() != link_meta.ino() || src_meta.dev() != link_meta.dev() {
+    if FileId::of(&src_meta) != FileId::of(&link_meta) {
         bail!("{:?} was replaced while being opened", job.src);
     }
 
@@ -109,7 +115,7 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
                 }
                 // The existing copy may never have been made durable (e.g. a crash after link).
                 sync_file(&existing)?;
-                sync_ancestors(parent_of(&existing)?, &opts.dst_root)?;
+                sync_dirs(parent_of(&existing)?, &[], &opts.dst_root)?;
                 confirm_mount(opts, root_dev)?;
                 remove_source(&job.src, &src_meta)?;
                 return Ok(Outcome::Duplicate(existing));
@@ -121,57 +127,93 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
         }
 
         let parent = parent_of(&target)?;
-        fs::create_dir_all(parent).with_context(|| format!("create {:?}", parent))?;
+        let created = create_dirs(parent)?;
 
         let same_device = fs::metadata(parent)?.dev() == src_meta.dev();
         let mut linked = false;
-        let placed = if opts.allow_link && same_device {
+        let written = if opts.allow_link && same_device {
             match link_no_replace(&job.src, &target) {
                 // Same st_dev but different mounts (bind mounts): fall back to copying.
                 Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
                     copy_durable(&mut src_file, &src_meta, &target)?
                 }
                 r => {
-                    let placed =
-                        r.with_context(|| format!("link {:?} -> {:?}", job.src, target))?;
-                    if placed {
+                    if r.with_context(|| format!("link {:?} -> {:?}", job.src, target))? {
                         ensure_linked_same_inode(&target, &src_meta)?;
                         sync_file(&target)?;
                         linked = true;
+                        Some(FileId::of(&src_meta))
+                    } else {
+                        None
                     }
-                    placed
                 }
             }
         } else {
             copy_durable(&mut src_file, &src_meta, &target)?
         };
-        if !placed {
+        let Some(written) = written else {
             continue; // target name appeared meanwhile: pick another
+        };
+        sync_dirs(parent, &created, &opts.dst_root)?;
+
+        // From here on `target` is only touched if it is still the file written above: after a
+        // remount or disk swap the same path may name someone else's file.
+        if !FileId::at(&target).is_some_and(|id| id == written) {
+            check_witness(opts)?;
+            bail!(
+                "{:?} no longer refers to the file just written (destination remounted?); source kept",
+                target
+            );
         }
-        // Also covers directories created above and ones never fsynced by an earlier run.
-        sync_ancestors(parent, &opts.dst_root)?;
+        if let Err(e) = confirm_mount(opts, root_dev) {
+            remove_ours(&target, written)?;
+            return Err(e);
+        }
 
         // A hard link is the same inode: nothing to compare.
         if opts.verify && !linked && !same_content(&mut src_file, &target)? {
             // The copy was read from the very inode we compare against, so it is really wrong.
             // Only the file this attempt created is removed; the source is kept for a retry.
-            fs::remove_file(&target).with_context(|| format!("remove unverified {:?}", target))?;
-            sync_dir(parent)?;
+            remove_ours(&target, written)?;
             bail!(
                 "verification failed for {:?}: destination differs from source",
                 job.src
             );
         }
 
-        if let Err(e) = confirm_mount(opts, root_dev) {
-            // Probably written to the bare mount point: do not leave it there.
-            let _ = fs::remove_file(&target);
-            return Err(e);
-        }
         remove_source(&job.src, &src_meta)?;
         return Ok(Outcome::Moved(target));
     }
     bail!("could not find a free destination name for {:?}", job.src)
+}
+
+/// Device and inode: identifies a file independently of its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileId {
+    dev: u64,
+    ino: u64,
+}
+
+impl FileId {
+    fn of(m: &fs::Metadata) -> Self {
+        Self {
+            dev: m.dev(),
+            ino: m.ino(),
+        }
+    }
+
+    fn at(path: &Path) -> Option<Self> {
+        fs::symlink_metadata(path).ok().map(|m| Self::of(&m))
+    }
+}
+
+/// Removes `path` only if it is still the file identified by `id` (one we created).
+fn remove_ours(path: &Path, id: FileId) -> Result<()> {
+    if FileId::at(path) == Some(id) {
+        fs::remove_file(path).with_context(|| format!("remove {:?}", path))?;
+        sync_dir(parent_of(path)?)?;
+    }
+    Ok(())
 }
 
 /// Fails with `WitnessMissing` if a witness is configured and absent. Returns the device of the
@@ -189,7 +231,8 @@ fn check_witness(opts: &MoveOptions) -> Result<Option<u64>> {
 
 /// Before the source is removed: the witness is still there and the backup root is still the same
 /// filesystem (an unmount during a long copy changes its device). Subvolumes or mounts *below* the
-/// root are fine.
+/// root are fine. Together with the `FileId` check of the target, this also catches an unmount
+/// followed by a remount during the move.
 fn confirm_mount(opts: &MoveOptions, root_dev: Option<u64>) -> Result<()> {
     let Some(w) = &opts.witness else {
         return Ok(());
@@ -205,12 +248,48 @@ fn parent_of(path: &Path) -> Result<&Path> {
     path.parent().context("destination has no parent directory")
 }
 
-/// fsyncs `dir` and each ancestor up to and including `root`, so every directory entry leading to
-/// the new file is durable. Cheap for directories without pending changes.
-fn sync_ancestors(dir: &Path, root: &Path) -> Result<()> {
-    for d in dir.ancestors() {
-        sync_dir(d)?;
-        if d == root || !d.starts_with(root) {
+/// `create_dir_all` (follows symlinks), returning the directories it actually created.
+fn create_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut cur = dir;
+    while let Err(e) = fs::metadata(cur) {
+        if e.kind() != io::ErrorKind::NotFound {
+            return Err(e).with_context(|| format!("stat {:?}", cur));
+        }
+        missing.push(cur.to_path_buf());
+        cur = cur.parent().context("no existing ancestor directory")?;
+    }
+    fs::create_dir_all(dir).with_context(|| format!("create {:?}", dir))?;
+    Ok(missing)
+}
+
+/// Directories already fsynced by this process (their entries leading to `DESTINATION_DIRECTORY`
+/// are durable), so each ancestor is synced once per run instead of once per file.
+fn synced_dirs() -> &'static Mutex<HashSet<PathBuf>> {
+    static SYNCED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    SYNCED.get_or_init(Default::default)
+}
+
+/// Makes every directory entry leading to a new file in `dir` durable: `dir` itself (new entry),
+/// the parents of directories created for it, and, once per run, each ancestor up to `root`
+/// (covers directories created but never synced by an interrupted run or by 0.2.x).
+fn sync_dirs(dir: &Path, created: &[PathBuf], root: &Path) -> Result<()> {
+    sync_dir(dir)?;
+    for c in created {
+        sync_dir(parent_of(c)?)?;
+    }
+    for d in dir.ancestors().skip(1) {
+        if !d.starts_with(root) {
+            break;
+        }
+        let first_time = synced_dirs()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(d.to_path_buf());
+        if first_time {
+            sync_dir(d)?;
+        }
+        if d == root {
             break;
         }
     }
@@ -275,7 +354,7 @@ fn link_no_replace(existing: &Path, target: &Path) -> io::Result<bool> {
 /// replaced in between, the new link (a second name of the newer source) is removed again.
 fn ensure_linked_same_inode(target: &Path, src_meta: &fs::Metadata) -> Result<()> {
     let linked = fs::symlink_metadata(target)?;
-    if linked.ino() != src_meta.ino() || linked.dev() != src_meta.dev() {
+    if FileId::of(&linked) != FileId::of(src_meta) {
         fs::remove_file(target).with_context(|| format!("remove mislinked {:?}", target))?;
         bail!("source was replaced during the move; retrying on the next pass");
     }
@@ -283,8 +362,8 @@ fn ensure_linked_same_inode(target: &Path, src_meta: &fs::Metadata) -> Result<()
 }
 
 /// Copies through the reserved temporary file, fsynced before it gets its final name.
-/// `Ok(false)` if `target` already exists.
-fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Result<bool> {
+/// Returns the identity of the new file, or `None` if `target` already exists.
+fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Result<Option<FileId>> {
     let tmp = target.with_file_name(TMP_NAME);
     // A leftover from an interrupted attempt is ours; anything else under that name is not touched.
     match fs::symlink_metadata(&tmp) {
@@ -296,7 +375,7 @@ fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Resul
         Err(e) => return Err(e).with_context(|| format!("stat {:?}", tmp)),
     }
 
-    let result = (|| -> Result<bool> {
+    let result = (|| -> Result<Option<FileId>> {
         // create_new = O_EXCL: never follows a symlink, never truncates an existing file.
         let mut output = OpenOptions::new()
             .write(true)
@@ -310,7 +389,10 @@ fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Resul
         output
             .sync_all()
             .with_context(|| format!("fsync {:?}", tmp))?;
-        link_no_replace(&tmp, target).with_context(|| format!("link {:?} -> {:?}", tmp, target))
+        let id = FileId::of(&output.metadata()?);
+        let placed = link_no_replace(&tmp, target)
+            .with_context(|| format!("link {:?} -> {:?}", tmp, target))?;
+        Ok(placed.then_some(id))
     })();
 
     // The temporary name is never needed after this point, whatever happened.
@@ -328,35 +410,46 @@ fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Resul
 ///
 /// Checking and then unlinking by path would leave a window where a newer version renamed in
 /// between gets deleted. Instead the path is first renamed (atomically, whatever it holds now) to a
-/// private name, checked there, and only then unlinked; a newer file is linked back.
+/// unique private name, checked there, and only then unlinked; anything else is put back.
 fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
-    let mut private_name = OsStr::new(".syncthing-backup-removing-").to_os_string();
-    private_name.push(copied.ino().to_string());
-    let private = src.with_file_name(private_name);
-    if fs::symlink_metadata(&private).is_err() {
-        fs::rename(src, &private).with_context(|| format!("rename source {:?}", src))?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let private = src.with_file_name(format!("{}{}", REMOVING_PREFIX, nanos));
+    match fs::symlink_metadata(&private) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => bail!("{:?} already exists", private),
+        Err(e) => return Err(e).with_context(|| format!("stat {:?}", private)),
     }
-    // Else: leftover of an interrupted attempt for this inode; examine it the same way.
+    fs::rename(src, &private).with_context(|| format!("rename source {:?}", src))?;
+
     let taken = fs::symlink_metadata(&private).with_context(|| format!("stat {:?}", private))?;
-    if taken.ino() == copied.ino()
-        && taken.dev() == copied.dev()
+    if taken.file_type().is_file()
+        && FileId::of(&taken) == FileId::of(copied)
         && taken.len() == copied.len()
         && taken.mtime() == copied.mtime()
     {
-        return fs::remove_file(&private).with_context(|| format!("remove source {:?}", private));
+        fs::remove_file(&private).with_context(|| format!("remove source {:?}", private))?;
+        return Ok(());
     }
-    match fs::hard_link(&private, src) {
-        Ok(()) => {
-            fs::remove_file(&private).with_context(|| format!("remove {:?}", private))?;
-            bail!(
-                "{:?} changed during the move; keeping it for the next pass",
-                src
-            )
-        }
-        // Left under the private name: it is not a Syncthing temp name, so it is neither cleaned
-        // up by Syncthing nor skipped by the scanner, and will be backed up under that name.
+
+    // Something else was there: put it back without replacing whatever may have appeared since.
+    // Files: link (fails if the name exists). Directories cannot be linked; rename cannot replace
+    // a file with a directory, at worst an empty directory.
+    let put_back = if taken.file_type().is_file() {
+        fs::hard_link(&private, src).and_then(|()| fs::remove_file(&private))
+    } else {
+        fs::rename(&private, src)
+    };
+    match put_back {
+        Ok(()) => bail!(
+            "{:?} changed during the move; keeping it for the next pass",
+            src
+        ),
+        // Reported by every scan until someone looks at it (see scanner).
         Err(e) => bail!(
-            "{:?} changed during the move and could not be put back ({}); kept as {:?}",
+            "{:?} changed during the move and could not be put back ({}); left as {:?}",
             src,
             e,
             private
@@ -437,9 +530,9 @@ mod tests {
         }
     }
 
-    fn opts(allow_link: bool) -> MoveOptions {
+    fn opts(env: &Env, allow_link: bool) -> MoveOptions {
         MoveOptions {
-            dst_root: PathBuf::from("/"),
+            dst_root: env.dst.clone(),
             witness: None,
             verify: true,
             dry_run: false,
@@ -463,7 +556,7 @@ mod tests {
             let env = env();
             let j = job(&env, "DCIM/a.jpg", b"photo");
             assert_eq!(
-                move_file(&j, &opts(allow_link)).unwrap(),
+                move_file(&j, &opts(&env, allow_link)).unwrap(),
                 Outcome::Moved(j.dst.clone())
             );
             assert_eq!(fs::read(&j.dst).unwrap(), b"photo");
@@ -482,7 +575,7 @@ mod tests {
             .unwrap()
             .set_modified(mtime)
             .unwrap();
-        move_file(&j, &opts(false)).unwrap();
+        move_file(&j, &opts(&env, false)).unwrap();
         assert_eq!(fs::read(&j.dst).unwrap(), vec![7u8; 3 * 1024 * 1024]);
         assert_eq!(fs::metadata(&j.dst).unwrap().modified().unwrap(), mtime);
         let leftovers: Vec<_> = fs::read_dir(&env.dst)
@@ -504,7 +597,7 @@ mod tests {
         let j = job(&env, "a.jpg", b"same");
         fs::write(&j.dst, b"same").unwrap();
         assert_eq!(
-            move_file(&j, &opts(false)).unwrap(),
+            move_file(&j, &opts(&env, false)).unwrap(),
             Outcome::Duplicate(j.dst.clone())
         );
         assert!(!j.src.exists());
@@ -517,7 +610,7 @@ mod tests {
         let j = job(&env, "a.jpg", b"new");
         fs::write(&j.dst, b"old").unwrap();
         assert_eq!(
-            move_file(&j, &opts(false)).unwrap(),
+            move_file(&j, &opts(&env, false)).unwrap(),
             Outcome::Moved(env.dst.join("a_1.jpg"))
         );
         assert_eq!(fs::read(&j.dst).unwrap(), b"old");
@@ -531,7 +624,7 @@ mod tests {
         fs::write(&j.dst, b"v1").unwrap();
         fs::write(env.dst.join("a_1.jpg"), b"v2").unwrap();
         assert_eq!(
-            move_file(&j, &opts(true)).unwrap(),
+            move_file(&j, &opts(&env, true)).unwrap(),
             Outcome::Duplicate(env.dst.join("a_1.jpg"))
         );
         assert!(!env.dst.join("a_2.jpg").exists());
@@ -545,7 +638,7 @@ mod tests {
         let j = job(&env, "a.jpg", b"new");
         fs::create_dir(&j.dst).unwrap();
         assert_eq!(
-            move_file(&j, &opts(true)).unwrap(),
+            move_file(&j, &opts(&env, true)).unwrap(),
             Outcome::Moved(env.dst.join("a_1.jpg"))
         );
         assert!(j.dst.is_dir());
@@ -562,7 +655,7 @@ mod tests {
         let j = Job { src, dst };
         let expected = env.dst.join(OsStr::from_bytes(b"caf\xe9_1.jpg"));
         assert_eq!(
-            move_file(&j, &opts(false)).unwrap(),
+            move_file(&j, &opts(&env, false)).unwrap(),
             Outcome::Moved(expected)
         );
     }
@@ -589,7 +682,7 @@ mod tests {
         let j = job(&env, "a.jpg", b"x");
         let o = MoveOptions {
             witness: Some(env.dst.join(".mounted")),
-            ..opts(false)
+            ..opts(&env, false)
         };
         let err = move_file(&j, &o).unwrap_err();
         assert!(err.downcast_ref::<WitnessMissing>().is_some());
@@ -603,7 +696,7 @@ mod tests {
         let j = job(&env, "a.jpg", b"x");
         let o = MoveOptions {
             dry_run: true,
-            ..opts(false)
+            ..opts(&env, false)
         };
         assert_eq!(
             move_file(&j, &o).unwrap(),
@@ -620,7 +713,7 @@ mod tests {
             src: env.src.join("nope"),
             dst: env.dst.join("nope"),
         };
-        assert_eq!(move_file(&j, &opts(false)).unwrap(), Outcome::Gone);
+        assert_eq!(move_file(&j, &opts(&env, false)).unwrap(), Outcome::Gone);
     }
 
     #[test]
@@ -646,17 +739,59 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_removal_is_completed() {
-        // Crash after the source was renamed to its private name but before the unlink.
+    fn directory_replacing_source_is_put_back() {
         let env = env();
         let j = job(&env, "a.jpg", b"v1");
         let copied = fs::symlink_metadata(&j.src).unwrap();
-        let private = env
-            .src
-            .join(format!(".syncthing-backup-removing-{}", copied.ino()));
-        fs::rename(&j.src, &private).unwrap();
-        remove_source(&j.src, &copied).unwrap();
-        assert!(!private.exists());
+        fs::remove_file(&j.src).unwrap();
+        fs::create_dir(&j.src).unwrap();
+        fs::write(j.src.join("inner"), b"x").unwrap();
+        assert!(remove_source(&j.src, &copied).is_err());
+        assert!(j.src.join("inner").exists());
+        let leftovers = fs::read_dir(&env.src)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(REMOVING_PREFIX)
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn remove_ours_refuses_foreign_file() {
+        let env = env();
+        let path = env.dst.join("a.jpg");
+        fs::write(&path, b"ours").unwrap();
+        let ours = FileId::at(&path).unwrap();
+        // Same path, other file (e.g. another disk mounted meanwhile).
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"someone else's backup").unwrap();
+        remove_ours(&path, ours).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"someone else's backup");
+    }
+
+    #[test]
+    fn witness_must_still_exist_before_source_removal() {
+        let env = env();
+        let witness = env.dst.join(".mounted");
+        fs::write(&witness, b"").unwrap();
+        let o = MoveOptions {
+            witness: Some(witness.clone()),
+            ..opts(&env, false)
+        };
+        let root_dev = check_witness(&o).unwrap();
+        assert!(confirm_mount(&o, root_dev).is_ok());
+        assert!(
+            confirm_mount(&o, root_dev.map(|d| d + 1)).is_err(),
+            "device changed"
+        );
+        fs::remove_file(&witness).unwrap();
+        let err = confirm_mount(&o, root_dev).unwrap_err();
+        assert!(err.downcast_ref::<WitnessMissing>().is_some());
     }
 
     #[test]
@@ -679,7 +814,7 @@ mod tests {
         let env = env();
         let j = job(&env, "a.jpg", b"fresh");
         fs::write(env.dst.join(TMP_NAME), b"stale partial copy").unwrap();
-        move_file(&j, &opts(false)).unwrap();
+        move_file(&j, &opts(&env, false)).unwrap();
         assert_eq!(fs::read(&j.dst).unwrap(), b"fresh");
         assert!(!env.dst.join(TMP_NAME).exists());
     }
@@ -691,7 +826,7 @@ mod tests {
         fs::write(&victim, b"precious").unwrap();
         std::os::unix::fs::symlink(&victim, env.dst.join(TMP_NAME)).unwrap();
         let j = job(&env, "a.jpg", b"new");
-        assert!(move_file(&j, &opts(false)).is_err());
+        assert!(move_file(&j, &opts(&env, false)).is_err());
         assert_eq!(fs::read(&victim).unwrap(), b"precious");
         assert!(j.src.exists());
     }
@@ -700,7 +835,7 @@ mod tests {
     fn reserved_name_is_rejected() {
         let env = env();
         let j = job(&env, TMP_NAME, b"x");
-        assert!(move_file(&j, &opts(false)).is_err());
+        assert!(move_file(&j, &opts(&env, false)).is_err());
         assert!(j.src.exists());
     }
 
@@ -719,7 +854,7 @@ mod tests {
         let env = env();
         let j = job(&env, "a/b/c/d.jpg", b"x");
         assert_eq!(
-            move_file(&j, &opts(false)).unwrap(),
+            move_file(&j, &opts(&env, false)).unwrap(),
             Outcome::Moved(env.dst.join("a/b/c/d.jpg"))
         );
     }

@@ -20,6 +20,8 @@ pub struct ScanResult {
     pub oldest: Option<Duration>,
     /// Directories that could not be read.
     pub errors: usize,
+    /// Files left under the mover's private removal name (see `mover::REMOVING_PREFIX`).
+    pub leftovers: usize,
 }
 
 /// Syncthing's own bookkeeping and in-progress files.
@@ -86,6 +88,20 @@ fn walk(
             }
         };
         if is_ignored(&entry.file_name()) {
+            continue;
+        }
+        if entry
+            .file_name()
+            .as_bytes()
+            .starts_with(mover::REMOVING_PREFIX.as_bytes())
+        {
+            // Never moved automatically: it is either an already backed-up copy (crash during
+            // removal) or a newer version that could not be put back. A human decides.
+            warn!(
+                "Leftover of an interrupted removal: {:?}. Compare it with the backup and move it by hand",
+                entry.path()
+            );
+            out.leftovers += 1;
             continue;
         }
         if entry.file_name() == mover::TMP_NAME {
@@ -168,6 +184,7 @@ mod tests {
             }]
         );
         assert_eq!(r.errors, 0);
+        assert_eq!(r.leftovers, 0);
 
         // Same files seen "now" are too young.
         let r = scan(
@@ -179,5 +196,25 @@ mod tests {
         );
         assert!(r.jobs.is_empty());
         assert_eq!(r.deferred, 1);
+    }
+
+    #[test]
+    fn leftovers_are_reported_not_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("st/photos");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(format!("{}123", mover::REMOVING_PREFIX)), b"x").unwrap();
+        fs::write(folder.join(mover::TMP_NAME), b"x").unwrap();
+        let folders = FolderMap::from([("photos".to_string(), PathBuf::from("photos"))]);
+        let later = SystemTime::now() + Duration::from_secs(3600);
+        let r = scan(
+            &dir.path().join("st"),
+            dir.path(),
+            &folders,
+            Duration::ZERO,
+            later,
+        );
+        assert!(r.jobs.is_empty());
+        assert_eq!(r.leftovers, 1);
     }
 }
