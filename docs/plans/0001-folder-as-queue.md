@@ -56,8 +56,8 @@ The plan lives **in the repo**, not only in this session's plan file:
 - [x] **T5** `scanner.rs` + tests for the ignore rules.
 - [x] **T6** `main.rs`: pending set, single worker, event task, scan task, drain-then-rescan, test with a
       slow fake mover.
-- [ ] **T7** Remove Redis/`config` deps, update the Dockerfile, bump to 0.3.0.
-- [ ] **T8** Rewrite `README.md`.
+- [x] **T7** Remove Redis/`config` deps (done in T6), update the Dockerfile, bump to 0.3.0.
+- [x] **T8** Rewrite `README.md`.
 - [ ] **T9** Local end-to-end checks (Syncthing container, crash/restart, 1 GB + 100 small files burst).
 - [ ] **T10** k3s deploy in dry run, then live. Mark the plan as done.
 
@@ -181,3 +181,4 @@ Run checks after each task (and record the result in the plan's progress log):
   removing the source, the mover checks it is still the same inode, size and mtime that was copied, so a
   newer version renamed in by Syncthing is never deleted; SIGTERM lets the current file finish. Next: R1
   review.
+- 2026-10-30 — T7: Alpine pinned to 3.24 (latest stable is 3.24.3, checked on dl-cdn.alpinelinux.org), obsolete ENV removed, version 0.3.0. T8: README rewritten. The Docker build itself is checked in T9.
