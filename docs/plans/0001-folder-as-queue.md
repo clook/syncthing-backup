@@ -194,3 +194,6 @@ Run checks after each task (and record the result in the plan's progress log):
   Syncthing config and apply to events too, put-back uses `renameat2(RENAME_NOREPLACE)` and is re-queued
   at once, link fallback warns once. e2e at 2957bb3: Receive Only 7/7 pass. Decision 0010 extended,
   still proposed.
+- 2026-10-30 — Round 6 (review of 139b163): an immediate re-queue of a file modified in place (same inode)
+  could loop and write a new `_N` copy per pass. Fixed: only a replaced inode is re-queued at once, a
+  modified file waits for a scan (MIN_AGE_SECS). Creation-time comment corrected (not available on musl).

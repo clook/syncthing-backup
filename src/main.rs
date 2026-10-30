@@ -208,14 +208,18 @@ async fn run_worker(shared: Arc<Shared>, mover: Mover) {
                 }
             }
             Ok(Err(e)) if e.downcast_ref::<KeptAs>().is_some() => {
-                // A newer version (or something else) replaced the source during the move. It is
-                // back under a normal name: queue it now, not at the next scan.
-                if let Some(KeptAs(kept)) = e.downcast_ref::<KeptAs>()
-                    && let Some(name) = kept.file_name()
+                // The source changed during the move and is back under a normal name. A newer
+                // version renamed into place is complete: queue it now, not at the next scan. A
+                // file modified in place may still be written: scans wait for MIN_AGE_SECS.
+                warn!("{:#}", e);
+                if let Some(KeptAs {
+                    path,
+                    replaced: true,
+                }) = e.downcast_ref::<KeptAs>()
+                    && let Some(name) = path.file_name()
                 {
-                    warn!("{:#}", e);
                     shared.push(Job {
-                        src: kept.clone(),
+                        src: path.clone(),
                         dst: job.dst.with_file_name(name),
                     });
                 }

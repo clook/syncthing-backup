@@ -263,8 +263,10 @@ fn create_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Directories already fsynced by this process (their entries leading to `DESTINATION_DIRECTORY`
 /// are durable), so each ancestor is synced once per run instead of once per file. Keyed by the
-/// identity of the backup root (device, inode, creation time), so another disk mounted there starts
-/// afresh even if it gets the same device number.
+/// identity of the backup root (device, inode, and creation time where std can read it: not on
+/// musl), so another disk mounted there usually starts afresh. A swap to a disk with the same device
+/// number and root inode can still reuse entries; the target directory and newly created
+/// directories are fsynced on every move regardless.
 fn synced_dirs() -> &'static Mutex<HashSet<(DiskKey, PathBuf)>> {
     static SYNCED: OnceLock<Mutex<HashSet<(DiskKey, PathBuf)>>> = OnceLock::new();
     SYNCED.get_or_init(Default::default)
@@ -461,8 +463,13 @@ fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
 
     // Something else was there (a newer version, a directory, a symlink): put it back without
     // replacing whatever may have appeared since, under a suffixed name if needed.
+    let replaced = FileId::of(&taken) != FileId::of(copied);
     match put_back(&private, src) {
-        Ok(back) => Err(KeptAs(back).into()),
+        Ok(back) => Err(KeptAs {
+            path: back,
+            replaced,
+        }
+        .into()),
         // Reported by every scan until someone looks at it (see scanner).
         Err(e) => bail!(
             "{:?} changed during the move and could not be put back ({}); left as {:?}",
@@ -473,17 +480,23 @@ fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
     }
 }
 
-/// `remove_source` found something else than the copied file and put it back under this path
-/// (the original name, or `name_N.ext` if that was taken again). The worker queues it right away.
+/// `remove_source` found something else than the copied file and put it back under `path` (the
+/// original name, or `name_N.ext` if that was taken again).
 #[derive(Debug)]
-pub struct KeptAs(pub PathBuf);
+pub struct KeptAs {
+    pub path: PathBuf,
+    /// Another inode replaced the source (Syncthing renames complete files into place): safe to
+    /// queue right away. Otherwise the same file was modified in place, maybe still being written,
+    /// and is left to scans, which wait for `MIN_AGE_SECS`.
+    pub replaced: bool,
+}
 
 impl std::fmt::Display for KeptAs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "source changed during the move; the newer entry is kept as {:?}",
-            self.0
+            self.path
         )
     }
 }
@@ -816,7 +829,9 @@ mod tests {
         fs::write(&newer, b"v2-longer").unwrap();
         fs::rename(&newer, &j.src).unwrap();
         let err = remove_source(&j.src, &copied).unwrap_err();
-        assert_eq!(err.downcast_ref::<KeptAs>().map(|k| &k.0), Some(&j.src));
+        let kept = err.downcast_ref::<KeptAs>().unwrap();
+        assert_eq!(kept.path, j.src);
+        assert!(kept.replaced);
         assert_eq!(fs::read(&j.src).unwrap(), b"v2-longer");
         let leftovers: Vec<_> = fs::read_dir(&env.src)
             .unwrap()
