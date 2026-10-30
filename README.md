@@ -11,15 +11,16 @@ without ever overwriting an existing backup.
 ## How it works
 
 ```
-Phone (Send Only, Ignore Delete) ──Syncthing──► server folder (Send & Receive, SSD)
+Phone (Send Only, Ignore Delete) ──Syncthing──► server folder (Receive Only, SSD)
                                                       │
           startup scan ─┐                             │ files waiting here = the queue
           periodic scan ├─► in-memory queue ─► ONE worker ─► HDD (durable copy, verified)
           events       ─┘                                      then source removed
 ```
 
-- **Files are never sent again.** When the porter removes a file from the server folder, Syncthing records
-  the deletion. The phone ignores it, because send-only folders ignore all remote changes.
+- **Files are never sent again.** On a Receive Only folder, a file the porter removes is a *local change*.
+  Syncthing does not download it again and does not announce the deletion. If the phone later edits the
+  file, the new version is transferred and backed up next to the original.
 - **The source folder is the queue.** A file stays there until it is safely on the HDD. Nothing else needs
   to survive a crash: the next scan finds whatever is left. No database or Redis is needed.
 - **Events only add speed.** Syncthing `ItemFinished` events queue files as soon as they arrive. Scans
@@ -32,11 +33,12 @@ Phone (Send Only, Ignore Delete) ──Syncthing──► server folder (Send & 
 | Device | Folder type | Option |
 |--------|-------------|--------|
 | Phone  | Send Only   | *Ignore Delete* enabled |
-| Server | Send & Receive | (`Receive Only` also works) |
+| Server | **Receive Only** | Do not click "Revert Local Changes": it downloads everything again. That is harmless (duplicates are detected) but wastes transfer |
 
-Do not share a folder that the porter processes with a device that is **not** send-only: on a Send & Receive
-folder, the porter's deletions would reach that device. Use `FOLDER_IDS` to limit the porter to the phone
-folders.
+Why not Send & Receive: the end-to-end tests showed that a photo edited on the phone *after* its first backup
+is then never transferred again, because Syncthing keeps the server's deletion as the winning version
+([decision 0009](docs/decisions/0009-server-folder-receive-only.md)). Use `FOLDER_IDS` to limit the porter to
+the phone folders when the server shares other folders.
 
 ## Safety guarantees
 1. **Nothing in the backup is ever overwritten.** If `photo.jpg` already exists with different content,

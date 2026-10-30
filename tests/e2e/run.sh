@@ -14,7 +14,7 @@ ST=${SYNCTHING_BIN:?set SYNCTHING_BIN to a syncthing v2 binary}
 SRC_ROOT=${E2E_SRC_ROOT:-${TMPDIR:-/tmp}/porter-e2e}
 HDD=$ROOT/target/e2e/hdd
 BIG_MB=${E2E_BIG_MB:-2048}
-SERVER_TYPE=${E2E_SERVER_TYPE:-sendreceive}   # or receiveonly
+SERVER_TYPE=${E2E_SERVER_TYPE:-receiveonly}   # sendreceive: `edit` is expected to fail (decision 0009)
 SCENARIOS=("$@")
 ((${#SCENARIOS[@]})) || SCENARIOS=(burst resend edit st_restart kill_copy offline witness)
 

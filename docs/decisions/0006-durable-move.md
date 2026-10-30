@@ -1,5 +1,5 @@
 # 0006 — Durable cross-device move
-- Status: accepted
+- Status: accepted, refined by 0008 (temp name, verification source)
 - Date: 2026-10-30
 - Type: technical
 - Decided by: proposed by Claude, approved by user (plan 0001).

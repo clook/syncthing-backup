@@ -1,5 +1,5 @@
 # 0005 — Folder scope: Send & Receive server folders, optional `FOLDER_IDS` allowlist
-- Status: accepted
+- Status: accepted; folder type superseded by 0009 (server folders become Receive Only)
 - Date: 2026-10-30
 - Type: product
 - Decided by: user. Server folders are "Send & Receive". The instance has "Only phone folders", so the

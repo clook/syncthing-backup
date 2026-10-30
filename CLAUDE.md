@@ -1,8 +1,9 @@
 # syncthing-backup
 
 Rust service that moves files received by a server-side Syncthing instance (phone backups) to an HDD.
-Phone folders are **send-only + ignore delete**; server folders are **Send & Receive**. Once a file is moved
-away, Syncthing records the deletion and the phone never re-sends it.
+Phone folders are **Send Only + Ignore Delete**; server folders are **Receive Only** (decision 0009: with
+Send & Receive, a photo edited on the phone after its first backup is never re-sent). Once a file is moved
+away, the server keeps that as a local change and the phone never re-sends it.
 
 This is the user's backup path: **correctness beats features and speed.**
 

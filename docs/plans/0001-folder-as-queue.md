@@ -182,3 +182,8 @@ Run checks after each task (and record the result in the plan's progress log):
   newer version renamed in by Syncthing is never deleted; SIGTERM lets the current file finish. Next: R1
   review.
 - 2026-10-30 — T7: Alpine pinned to 3.24 (latest stable is 3.24.3, checked on dl-cdn.alpinelinux.org), obsolete ENV removed, version 0.3.0. T8: README rewritten. The Docker build itself is checked in T9.
+- 2026-10-30 — R1 review: 10 findings, all fixed. A second review of those fixes found 10 more (including
+  regressions that could stall the worker), all fixed, and a third review is running. T9: the e2e suite uses
+  two local Syncthing v2.1.7 instances. With Receive Only, 7/7 scenarios pass, and in the burst scenario all
+  100 small files were queued during the 2 GB copy. With Send & Receive, `edit` fails because of how
+  Syncthing resolves conflicts, which led to decision 0009. The user approved 0008 and 0009: "I approve 0008 and 0009, I'll switch to Receive Only".
