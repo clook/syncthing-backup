@@ -19,6 +19,8 @@ use tracing::{debug, error, info, warn};
 const WITNESS_RETRY: Duration = Duration::from_secs(60);
 /// A file still in the source after this long is reported on every scan.
 const STALE_WARNING: Duration = Duration::from_secs(24 * 3600);
+/// Next scan delay while Syncthing's folder list is unavailable (e.g. at startup).
+const FOLDER_RETRY: Duration = Duration::from_secs(10);
 /// Consecutive failures of one file before it is reported as an error instead of a warning.
 const FAILURES_BEFORE_ERROR: u32 = 3;
 
@@ -30,7 +32,10 @@ type Mover = Arc<dyn Fn(&Job) -> Result<Outcome> + Send + Sync>;
 struct QueueState {
     items: VecDeque<Job>,
     queued: HashSet<PathBuf>,
-    in_progress: Option<PathBuf>,
+    in_progress: Option<Job>,
+    /// The in-progress file was announced again (e.g. a newer version arrived): queue it again
+    /// once the current attempt ends, whatever its outcome.
+    rerun: bool,
 }
 
 struct Shared {
@@ -58,11 +63,16 @@ impl Shared {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queues a job unless that source is already queued or being processed. Never blocks on I/O,
-    /// so producers keep up while the worker copies a large file.
+    /// Queues a job unless that source is already queued. If it is being processed, it is queued
+    /// again when the current attempt ends. Never blocks on I/O, so producers keep up while the
+    /// worker copies a large file.
     fn push(&self, job: Job) -> bool {
         let mut q = self.lock();
-        if q.in_progress.as_ref() == Some(&job.src) || !q.queued.insert(job.src.clone()) {
+        if q.in_progress.as_ref().is_some_and(|j| j.src == job.src) {
+            q.rerun = true;
+            return false;
+        }
+        if !q.queued.insert(job.src.clone()) {
             return false;
         }
         q.items.push_back(job);
@@ -82,12 +92,20 @@ impl Shared {
         let mut q = self.lock();
         let job = q.items.pop_front()?;
         q.queued.remove(&job.src);
-        q.in_progress = Some(job.src.clone());
+        q.in_progress = Some(job.clone());
+        q.rerun = false;
         Some(job)
     }
 
     fn done(&self) {
-        self.lock().in_progress = None;
+        let mut q = self.lock();
+        let job = q.in_progress.take();
+        if std::mem::take(&mut q.rerun)
+            && let Some(job) = job
+            && q.queued.insert(job.src.clone())
+        {
+            q.items.push_back(job);
+        }
     }
 
     fn len(&self) -> usize {
@@ -214,7 +232,14 @@ fn job_from_event(event: &Event, folders: &FolderMap, cfg: &AppConfig) -> Option
         return None;
     }
     let Some(rel) = folders.get(&data.folder) else {
-        debug!("Ignoring item from unmapped folder {}", data.folder);
+        if folders.is_empty() {
+            warn!(
+                "No folder mapping yet; {:?} will be picked up by the next scan",
+                data.item
+            );
+        } else {
+            debug!("Ignoring item from unmapped folder {}", data.folder);
+        }
         return None;
     };
     let item = Path::new(&data.item);
@@ -240,10 +265,12 @@ async fn run_events(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared
         match client.events(since).await {
             Ok(events) => {
                 backoff = Duration::from_secs(1);
+                // Checked on every response: after a restart our cursor may be ahead of the new
+                // IDs (empty polls) or new IDs may already have passed it (silent gap).
+                if check_restart(&client, &mut start_time, &mut since, &shared).await {
+                    continue;
+                }
                 if events.is_empty() {
-                    // A quiet long-poll may also mean Syncthing restarted and our cursor is now
-                    // ahead of its new IDs.
-                    check_restart(&client, &mut start_time, &mut since, &shared).await;
                     continue;
                 }
                 if since > 0 && events[0].id > since + 1 {
@@ -281,21 +308,24 @@ async fn run_events(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared
 }
 
 /// Event IDs restart from 1 when Syncthing restarts (decision 0002): reset the cursor and rescan.
+/// Returns true when a restart was detected (the current batch of events must be discarded).
 async fn check_restart(
     client: &Client,
     start_time: &mut Option<String>,
     since: &mut u64,
     shared: &Shared,
-) {
+) -> bool {
     let Ok(now) = client.start_time().await else {
-        return;
+        return false;
     };
-    if start_time.as_ref().is_some_and(|prev| *prev != now) {
+    let restarted = start_time.as_ref().is_some_and(|prev| *prev != now);
+    if restarted {
         info!("Syncthing restarted; resetting event cursor and rescanning");
         *since = 0;
         shared.rescan.notify_one();
     }
     *start_time = Some(now);
+    restarted
 }
 
 // --- Scanner: rebuilds the queue from the source folders ---
@@ -311,6 +341,7 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
             return;
         }
 
+        let mut retry_soon = false;
         match client.folders(&cfg).await {
             Ok(map) => {
                 if map != shared.folders() {
@@ -318,10 +349,13 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
                     shared.set_folders(map);
                 }
             }
-            Err(e) => warn!(
-                "Cannot refresh folders, keeping the previous mapping: {:#}",
-                e
-            ),
+            Err(e) => {
+                warn!(
+                    "Cannot refresh folders, keeping the previous mapping: {:#}",
+                    e
+                );
+                retry_soon = true;
+            }
         }
         let folders = shared.folders();
         if folders.is_empty() {
@@ -335,7 +369,11 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
             scanner::scan(&src, &dst, &folders, min_age, SystemTime::now())
         })
         .await;
-        next = cfg.scan_interval;
+        next = if retry_soon || shared.folders().is_empty() {
+            FOLDER_RETRY.min(cfg.scan_interval)
+        } else {
+            cfg.scan_interval
+        };
         match scan {
             Err(e) => error!("Scan panicked: {}", e),
             Ok(r) => {
@@ -356,7 +394,7 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
                     );
                 }
                 if r.deferred > 0 {
-                    next = cfg.min_age.max(Duration::from_secs(5));
+                    next = next.min(cfg.min_age.max(Duration::from_secs(5)));
                 }
             }
         }
@@ -502,12 +540,17 @@ mod tests {
         assert!(s.push(job("/a")));
         assert!(!s.push(job("/a")));
         assert_eq!(s.pop(), Some(job("/a")));
-        assert!(
-            !s.push(job("/a")),
-            "in-progress file must not be queued again"
-        );
+        assert!(!s.push(job("/a")), "in-progress file is not queued twice");
+        assert_eq!(s.len(), 0);
         s.done();
-        assert!(s.push(job("/a")));
+        assert_eq!(
+            s.len(),
+            1,
+            "announced while in progress: re-queued when done"
+        );
+        assert_eq!(s.pop(), Some(job("/a")));
+        s.done();
+        assert_eq!(s.len(), 0, "no rerun requested this time");
     }
 
     /// The burst scenario (decision 0003): a 1 GB copy must not stop new files from being queued.
