@@ -187,3 +187,10 @@ Run checks after each task (and record the result in the plan's progress log):
   two local Syncthing v2.1.7 instances. With Receive Only, 7/7 scenarios pass, and in the burst scenario all
   100 small files were queued during the 2 GB copy. With Send & Receive, `edit` fails because of how
   Syncthing resolves conflicts, which led to decision 0009. The user approved 0008 and 0009: "I approve 0008 and 0009, I'll switch to Receive Only".
+- 2026-10-30 — Final full review (round 4, 1057e25..19435b6): 10 findings; fixed in 2957bb3 except #7
+  (path component exists as a file: rare, never silent) and #10 (extra status request: correctness over
+  speed). Round 5 reviewed 2957bb3 and found a regression (a `.stfolder` marker alone skipped a subtree)
+  and that put-back via `link` fails under `fs.protected_hardlinks`; fixed: nested folders come from the
+  Syncthing config and apply to events too, put-back uses `renameat2(RENAME_NOREPLACE)` and is re-queued
+  at once, link fallback warns once. e2e at 2957bb3: Receive Only 7/7 pass. Decision 0010 extended,
+  still proposed.

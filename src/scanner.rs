@@ -2,12 +2,13 @@
 //! (docs/decisions/0002).
 
 use crate::mover::{self, Job};
-use crate::syncthing::FolderMap;
+use crate::syncthing::{FolderMap, FolderRoots};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 
@@ -24,15 +25,12 @@ pub struct ScanResult {
     pub leftovers: usize,
 }
 
-/// Syncthing's marker of a folder root; a subdirectory holding one is another folder.
-const FOLDER_MARKER: &str = ".stfolder";
-
 /// Syncthing's own bookkeeping (only at the folder root, deeper they are ordinary synced files)
 /// and in-progress files (anywhere).
 pub fn is_ignored(name: &OsStr, at_root: bool) -> bool {
     let n = name.as_bytes();
     (at_root
-        && (n == FOLDER_MARKER.as_bytes()
+        && (n == b".stfolder"
             || n == b".stignore"
             || n == b".stversions"
             || n.starts_with(b".stfolder.removed-")))
@@ -44,10 +42,12 @@ pub fn scan(
     src_root: &Path,
     dst_root: &Path,
     folders: &FolderMap,
+    roots: &FolderRoots,
     min_age: Duration,
     now: SystemTime,
 ) -> ScanResult {
     let mut result = ScanResult::default();
+    let nested: HashSet<_> = roots.iter().map(|r| src_root.join(r)).collect();
     for rel in folders.values() {
         let root = src_root.join(rel);
         if !root.is_dir() {
@@ -59,6 +59,7 @@ pub fn scan(
             &root,
             &src_root.join(rel),
             &dst_root.join(rel),
+            &nested,
             min_age,
             now,
             &mut result,
@@ -71,6 +72,7 @@ fn walk(
     dir: &Path,
     src_base: &Path,
     dst_base: &Path,
+    nested: &HashSet<PathBuf>,
     min_age: Duration,
     now: SystemTime,
     out: &mut ScanResult,
@@ -121,13 +123,14 @@ fn walk(
             Err(_) => continue, // vanished meanwhile
         };
         if meta.is_dir() {
-            // A nested Syncthing folder (paused, not in FOLDER_IDS, or mapped on its own) is never
-            // processed as part of this one.
-            if fs::symlink_metadata(path.join(FOLDER_MARKER)).is_ok() {
+            // Another Syncthing folder nested in this one (paused, not in FOLDER_IDS, or mapped on
+            // its own) is never processed as part of it. Only configured folders count: a nested
+            // `.stfolder` can also be ordinary synced content.
+            if nested.contains(&path) {
                 debug!("Skipping {:?}: root of another Syncthing folder", path);
                 continue;
             }
-            walk(&path, src_base, dst_base, min_age, now, out);
+            walk(&path, src_base, dst_base, nested, min_age, now, out);
         } else if meta.file_type().is_file() {
             let changed = UNIX_EPOCH
                 + Duration::new(
@@ -153,7 +156,6 @@ fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn ignore_rules() {
@@ -194,28 +196,42 @@ mod tests {
         fs::write(folder.join("DCIM/a.jpg"), b"a").unwrap();
         fs::write(folder.join("DCIM/.syncthing.b.jpg.tmp"), b"partial").unwrap();
         fs::write(folder.join(".stversions/old.jpg"), b"v").unwrap();
-        // A nested Syncthing folder is left alone.
+        // A nested Syncthing folder is left alone; a nested marker alone is ordinary content.
         fs::create_dir_all(folder.join("shared/.stfolder")).unwrap();
         fs::write(folder.join("shared/laptop.txt"), b"l").unwrap();
+        fs::create_dir_all(folder.join("Camera/.stfolder")).unwrap();
+        fs::write(folder.join("Camera/c.jpg"), b"c").unwrap();
         std::os::unix::fs::symlink("/etc/passwd", folder.join("link")).unwrap();
 
         let folders = FolderMap::from([("photos".to_string(), PathBuf::from("phone/photos"))]);
+        let roots = FolderRoots::from([
+            PathBuf::from("phone/photos"),
+            PathBuf::from("phone/photos/shared"),
+        ]);
         let later = SystemTime::now() + Duration::from_secs(3600);
-        let r = scan(&src, &dst, &folders, Duration::from_secs(60), later);
+        let r = scan(&src, &dst, &folders, &roots, Duration::from_secs(60), later);
+        let mut jobs = r.jobs.clone();
+        jobs.sort_by(|a, b| a.src.cmp(&b.src));
         assert_eq!(
-            r.jobs,
-            vec![Job {
-                src: folder.join("DCIM/a.jpg"),
-                dst: dst.join("phone/photos/DCIM/a.jpg")
-            }]
+            jobs,
+            vec![
+                Job {
+                    src: folder.join("Camera/c.jpg"),
+                    dst: dst.join("phone/photos/Camera/c.jpg")
+                },
+                Job {
+                    src: folder.join("DCIM/a.jpg"),
+                    dst: dst.join("phone/photos/DCIM/a.jpg")
+                },
+            ]
         );
         assert_eq!(r.errors, 0);
         assert_eq!(r.leftovers, 0);
 
         // Below the root, Syncthing's names are ordinary synced files.
         fs::write(folder.join("DCIM/.stignore"), b"n").unwrap();
-        let r = scan(&src, &dst, &folders, Duration::from_secs(60), later);
-        assert_eq!(r.jobs.len(), 2);
+        let r = scan(&src, &dst, &folders, &roots, Duration::from_secs(60), later);
+        assert_eq!(r.jobs.len(), 3);
         fs::remove_file(folder.join("DCIM/.stignore")).unwrap();
 
         // Same files seen "now" are too young.
@@ -223,11 +239,12 @@ mod tests {
             &src,
             &dst,
             &folders,
+            &roots,
             Duration::from_secs(60),
             SystemTime::now(),
         );
         assert!(r.jobs.is_empty());
-        assert_eq!(r.deferred, 1);
+        assert_eq!(r.deferred, 2);
     }
 
     #[test]
@@ -243,6 +260,7 @@ mod tests {
             &dir.path().join("st"),
             dir.path(),
             &folders,
+            &FolderRoots::new(),
             Duration::ZERO,
             later,
         );

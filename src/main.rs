@@ -5,13 +5,13 @@ mod syncthing;
 
 use anyhow::Result;
 use config::AppConfig;
-use mover::{Job, MoveOptions, Outcome, WitnessMissing};
+use mover::{Job, KeptAs, MoveOptions, Outcome, WitnessMissing};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, SystemTime};
-use syncthing::{Client, Event, FolderMap, ItemFinishedData};
+use syncthing::{Client, Event, FolderMap, FolderRoots, ItemFinishedData};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
@@ -45,6 +45,8 @@ struct Shared {
     /// Asks the scan task for a full rescan.
     rescan: Notify,
     folders: RwLock<FolderMap>,
+    /// Roots of all Syncthing folders, to leave nested folders alone (see scanner).
+    roots: RwLock<FolderRoots>,
     shutdown: AtomicBool,
 }
 
@@ -55,6 +57,7 @@ impl Shared {
             work: Notify::new(),
             rescan: Notify::new(),
             folders: RwLock::new(folders),
+            roots: RwLock::new(FolderRoots::new()),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -133,6 +136,14 @@ impl Shared {
         *self.folders.write().unwrap_or_else(|e| e.into_inner()) = map;
     }
 
+    fn roots(&self) -> FolderRoots {
+        self.roots.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_roots(&self, roots: FolderRoots) {
+        *self.roots.write().unwrap_or_else(|e| e.into_inner()) = roots;
+    }
+
     fn stop(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.work.notify_one();
@@ -196,6 +207,19 @@ async fn run_worker(shared: Arc<Shared>, mover: Mover) {
                     }
                 }
             }
+            Ok(Err(e)) if e.downcast_ref::<KeptAs>().is_some() => {
+                // A newer version (or something else) replaced the source during the move. It is
+                // back under a normal name: queue it now, not at the next scan.
+                if let Some(KeptAs(kept)) = e.downcast_ref::<KeptAs>()
+                    && let Some(name) = kept.file_name()
+                {
+                    warn!("{:#}", e);
+                    shared.push(Job {
+                        src: kept.clone(),
+                        dst: job.dst.with_file_name(name),
+                    });
+                }
+            }
             Ok(Err(e)) if e.downcast_ref::<WitnessMissing>().is_some() => {
                 error!("{:#}. Pausing for {}s", e, WITNESS_RETRY.as_secs());
                 shared.push_front(job);
@@ -227,7 +251,12 @@ async fn run_worker(shared: Arc<Shared>, mover: Mover) {
 // --- Event poller: memory only, never touches the disk ---
 
 /// Turns a Syncthing event into a job, if it is a successfully received file in a mapped folder.
-fn job_from_event(event: &Event, folders: &FolderMap, cfg: &AppConfig) -> Option<Job> {
+fn job_from_event(
+    event: &Event,
+    folders: &FolderMap,
+    roots: &FolderRoots,
+    cfg: &AppConfig,
+) -> Option<Job> {
     if event.event_type != "ItemFinished" {
         return None;
     }
@@ -260,6 +289,16 @@ fn job_from_event(event: &Event, folders: &FolderMap, cfg: &AppConfig) -> Option
         );
         return None;
     }
+    // Same rule as the scanner: an item inside another Syncthing folder nested in this one belongs
+    // to that folder.
+    let full = rel.join(item);
+    if roots
+        .iter()
+        .any(|r| r != rel && r.starts_with(rel) && full.starts_with(r))
+    {
+        debug!("Ignoring {:?}: inside another Syncthing folder", full);
+        return None;
+    }
     Some(Job {
         src: cfg.src_dir.join(rel).join(item),
         dst: cfg.dst_dir.join(rel).join(item),
@@ -290,13 +329,13 @@ async fn run_events(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared
                     );
                     shared.rescan.notify_one();
                 }
-                let folders = shared.folders();
+                let (folders, roots) = (shared.folders(), shared.roots());
                 for event in &events {
                     since = event.id;
                     if event.event_type == "ConfigSaved" {
                         info!("Syncthing configuration changed; refreshing folders");
                         shared.rescan.notify_one();
-                    } else if let Some(job) = job_from_event(event, &folders, &cfg)
+                    } else if let Some(job) = job_from_event(event, &folders, &roots, &cfg)
                         && shared.push_event(job.clone())
                     {
                         info!("Queued {:?} ({} pending)", job.src, shared.len());
@@ -342,6 +381,8 @@ async fn check_restart(
 
 async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>) {
     let mut next = Duration::ZERO; // scan at startup
+    // Kept from the last successful refresh, like the folder mapping.
+    let mut roots = FolderRoots::new();
     loop {
         tokio::select! {
             _ = tokio::time::sleep(next) => {}
@@ -352,7 +393,9 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
         }
 
         match client.folders(&cfg).await {
-            Ok(map) => {
+            Ok((map, all_roots)) => {
+                roots = all_roots;
+                shared.set_roots(roots.clone());
                 if map != shared.folders() {
                     info!("Folder mapping: {:?}", map);
                     shared.set_folders(map);
@@ -371,8 +414,9 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
         }
 
         let (src, dst, min_age) = (cfg.src_dir.clone(), cfg.dst_dir.clone(), cfg.min_age);
+        let nested = roots.clone();
         let scan = tokio::task::spawn_blocking(move || {
-            scanner::scan(&src, &dst, &folders, min_age, SystemTime::now())
+            scanner::scan(&src, &dst, &folders, &nested, min_age, SystemTime::now())
         })
         .await;
         // Retry soon only while no mapping is known (e.g. Syncthing not up yet at startup).
@@ -521,10 +565,15 @@ mod tests {
     #[test]
     fn event_to_job() {
         let folders = FolderMap::from([("photos".to_string(), PathBuf::from("phone/photos"))]);
+        let roots = FolderRoots::from([
+            PathBuf::from("phone/photos"),
+            PathBuf::from("phone/photos/shared"),
+        ]);
         let c = cfg();
         let j = job_from_event(
             &item_event("DCIM/a.jpg", "photos", "update", json!(null)),
             &folders,
+            &roots,
             &c,
         )
         .unwrap();
@@ -537,8 +586,14 @@ mod tests {
             item_event("a.jpg", "unknown", "update", json!(null)),
             item_event("../escape.jpg", "photos", "update", json!(null)),
             item_event("/abs.jpg", "photos", "update", json!(null)),
+            // Inside a nested Syncthing folder: that folder's business, like in scans.
+            item_event("shared/x.txt", "photos", "update", json!(null)),
         ] {
-            assert!(job_from_event(&ev, &folders, &c).is_none(), "{:?}", ev.data);
+            assert!(
+                job_from_event(&ev, &folders, &roots, &c).is_none(),
+                "{:?}",
+                ev.data
+            );
         }
     }
 

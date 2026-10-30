@@ -9,9 +9,10 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Upper bound on `name_N.ext` candidates, to fail loudly instead of looping forever.
 const MAX_SUFFIX: u32 = 10_000;
@@ -142,7 +143,15 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
                 // Bind mounts (EXDEV), fs.protected_hardlinks (EPERM), no hard-link support: a
                 // copy is always possible.
                 Err(e) => {
-                    debug!("link {:?} -> {:?} failed ({}), copying", job.src, target, e);
+                    static WARNED: AtomicBool = AtomicBool::new(false);
+                    if !WARNED.swap(true, Ordering::Relaxed) {
+                        warn!(
+                            "Cannot hard-link {:?} -> {:?} ({}); copying instead (slower). Logged once per run",
+                            job.src, target, e
+                        );
+                    } else {
+                        debug!("link {:?} -> {:?} failed ({}), copying", job.src, target, e);
+                    }
                     copy_durable(&mut src_file, &src_meta, &target, opts.verify)?
                 }
             }
@@ -254,11 +263,14 @@ fn create_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Directories already fsynced by this process (their entries leading to `DESTINATION_DIRECTORY`
 /// are durable), so each ancestor is synced once per run instead of once per file. Keyed by the
-/// device of the backup root, so another disk mounted there starts afresh.
-fn synced_dirs() -> &'static Mutex<HashSet<(u64, PathBuf)>> {
-    static SYNCED: OnceLock<Mutex<HashSet<(u64, PathBuf)>>> = OnceLock::new();
+/// identity of the backup root (device, inode, creation time), so another disk mounted there starts
+/// afresh even if it gets the same device number.
+fn synced_dirs() -> &'static Mutex<HashSet<(DiskKey, PathBuf)>> {
+    static SYNCED: OnceLock<Mutex<HashSet<(DiskKey, PathBuf)>>> = OnceLock::new();
     SYNCED.get_or_init(Default::default)
 }
+
+type DiskKey = (u64, u64, Option<SystemTime>);
 
 /// Makes every directory entry leading to a new file in `dir` durable: `dir` itself (new entry),
 /// the parents of directories created for it, and, once per run, each ancestor up to `root`
@@ -268,14 +280,13 @@ fn sync_dirs(dir: &Path, created: &[PathBuf], root: &Path) -> Result<()> {
     for c in created {
         sync_dir(parent_of(c)?)?;
     }
-    let root_dev = fs::metadata(root)
-        .with_context(|| format!("stat {:?}", root))?
-        .dev();
+    let root_meta = fs::metadata(root).with_context(|| format!("stat {:?}", root))?;
+    let disk: DiskKey = (root_meta.dev(), root_meta.ino(), root_meta.created().ok());
     for d in dir.ancestors().skip(1) {
         if !d.starts_with(root) {
             break;
         }
-        let key = (root_dev, d.to_path_buf());
+        let key = (disk, d.to_path_buf());
         let done = synced_dirs()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -448,20 +459,10 @@ fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
         return Ok(());
     }
 
-    // Something else was there: put it back without replacing whatever may have appeared since.
-    // Files: link (fails if the name exists, then a suffixed name is used). Directories cannot be
-    // linked; rename cannot replace a file with a directory, at worst an empty directory.
-    let put_back = if taken.file_type().is_file() {
-        put_back_file(&private, src)
-    } else {
-        fs::rename(&private, src).map(|()| src.to_path_buf())
-    };
-    match put_back {
-        Ok(back) => bail!(
-            "{:?} changed during the move; kept as {:?} for the next pass",
-            src,
-            back
-        ),
+    // Something else was there (a newer version, a directory, a symlink): put it back without
+    // replacing whatever may have appeared since, under a suffixed name if needed.
+    match put_back(&private, src) {
+        Ok(back) => Err(KeptAs(back).into()),
         // Reported by every scan until someone looks at it (see scanner).
         Err(e) => bail!(
             "{:?} changed during the move and could not be put back ({}); left as {:?}",
@@ -472,26 +473,78 @@ fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
     }
 }
 
-/// Gives a file taken by `remove_source` a normal name again, never replacing anything: `src` if
-/// free, else `src_1`, `src_2`… (a newer version arrived meanwhile). Under a normal name it is
-/// queued and backed up like any other file.
-fn put_back_file(private: &Path, src: &Path) -> io::Result<PathBuf> {
+/// `remove_source` found something else than the copied file and put it back under this path
+/// (the original name, or `name_N.ext` if that was taken again). The worker queues it right away.
+#[derive(Debug)]
+pub struct KeptAs(pub PathBuf);
+
+impl std::fmt::Display for KeptAs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "source changed during the move; the newer entry is kept as {:?}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for KeptAs {}
+
+/// Gives an entry taken by `remove_source` a normal name again, never replacing anything: `src` if
+/// free, else `src_1`, `src_2`… (a newer version arrived meanwhile).
+fn put_back(private: &Path, src: &Path) -> io::Result<PathBuf> {
     for n in 0..=MAX_SUFFIX {
         let candidate = if n == 0 {
             src.to_path_buf()
         } else {
             suffixed(src, n)
         };
-        match link_no_replace(private, &candidate) {
-            Ok(true) => {
-                fs::remove_file(private)?;
-                return Ok(candidate);
-            }
+        match rename_no_replace(private, &candidate) {
+            Ok(true) => return Ok(candidate),
             Ok(false) => {}
             Err(e) => return Err(e),
         }
     }
-    Err(io::Error::other("no free name to put the file back"))
+    Err(io::Error::other("no free name to put the entry back"))
+}
+
+/// `rename` that fails instead of replacing an existing `to` (renameat2 RENAME_NOREPLACE; needs no
+/// link permission, unlike `link`). `Ok(false)` if `to` exists. Filesystems without
+/// RENAME_NOREPLACE fall back to link + unlink, which only works for non-directories.
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
+    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
+    let (cfrom, cto) = (c(from)?, c(to)?);
+    // SAFETY: both pointers are valid NUL-terminated strings for the duration of the call. The raw
+    // syscall avoids depending on a libc wrapper (musl only has one in recent versions).
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            cfrom.as_ptr(),
+            libc::AT_FDCWD,
+            cto.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if r == 0 {
+        return Ok(true);
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EEXIST) => Ok(false),
+        Some(libc::EINVAL) | Some(libc::ENOSYS) => {
+            if !link_no_replace(from, to)? {
+                return Ok(false);
+            }
+            // Back under a normal name either way; a private name that cannot be removed is
+            // only a second name of it, reported by scans.
+            if let Err(e) = fs::remove_file(from) {
+                warn!("Cannot remove {:?} after putting it back: {}", from, e);
+            }
+            Ok(true)
+        }
+        _ => Err(e),
+    }
 }
 
 fn sync_file(path: &Path) -> Result<()> {
@@ -762,7 +815,8 @@ mod tests {
         let newer = env.src.join(".tmp-newer");
         fs::write(&newer, b"v2-longer").unwrap();
         fs::rename(&newer, &j.src).unwrap();
-        assert!(remove_source(&j.src, &copied).is_err());
+        let err = remove_source(&j.src, &copied).unwrap_err();
+        assert_eq!(err.downcast_ref::<KeptAs>().map(|k| &k.0), Some(&j.src));
         assert_eq!(fs::read(&j.src).unwrap(), b"v2-longer");
         let leftovers: Vec<_> = fs::read_dir(&env.src)
             .unwrap()
@@ -784,7 +838,7 @@ mod tests {
         // Version 3 arrived after version 2 was taken: version 2 gets a normal, free name.
         fs::write(&src, b"v3").unwrap();
         fs::write(env.src.join("a_1.jpg"), b"other").unwrap();
-        let back = put_back_file(&private, &src).unwrap();
+        let back = put_back(&private, &src).unwrap();
         assert_eq!(back, env.src.join("a_2.jpg"));
         assert_eq!(fs::read(&back).unwrap(), b"v2");
         assert_eq!(fs::read(&src).unwrap(), b"v3");

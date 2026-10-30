@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -13,6 +13,10 @@ const EVENTS_TIMEOUT_SECS: u64 = 60;
 
 /// Syncthing folder ID -> folder path relative to the storage root.
 pub type FolderMap = HashMap<String, PathBuf>;
+
+/// Paths, relative to the storage root, of every Syncthing folder (paused and not allowlisted
+/// included): a folder nested inside a processed one is never processed as part of it.
+pub type FolderRoots = HashSet<PathBuf>;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Event {
@@ -82,10 +86,12 @@ impl Client {
             .with_context(|| format!("Invalid JSON from {}", path_and_query))
     }
 
-    /// Fetches the folder list from Syncthing and maps IDs to paths relative to the storage root.
-    pub async fn folders(&self, cfg: &AppConfig) -> Result<FolderMap> {
+    /// Fetches the folder list from Syncthing: the folders to process (IDs mapped to paths
+    /// relative to the storage root) and the roots of all folders.
+    pub async fn folders(&self, cfg: &AppConfig) -> Result<(FolderMap, FolderRoots)> {
         let st_cfg: SyncthingConfig = self.get("/rest/system/config").await?;
-        Ok(map_folders(st_cfg.folders, cfg))
+        let roots = folder_roots(&st_cfg.folders, cfg);
+        Ok((map_folders(st_cfg.folders, cfg), roots))
     }
 
     /// Changes whenever Syncthing restarts (event IDs then start again from 1).
@@ -102,6 +108,19 @@ impl Client {
         ))
         .await
     }
+}
+
+/// Every folder under the storage root, whatever its state.
+pub fn folder_roots(folders: &[FolderConfig], cfg: &AppConfig) -> FolderRoots {
+    folders
+        .iter()
+        .filter_map(|f| {
+            PathBuf::from(&f.path)
+                .strip_prefix(&cfg.st_storage_dir)
+                .ok()
+                .map(|rel| rel.to_path_buf())
+        })
+        .collect()
 }
 
 /// Keeps unpaused folders that live under the storage root and, when set, are in `FOLDER_IDS`.
@@ -141,7 +160,6 @@ pub fn map_folders(folders: Vec<FolderConfig>, cfg: &AppConfig) -> FolderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     fn cfg(folder_ids: Option<&[&str]>) -> AppConfig {
         AppConfig {
@@ -180,6 +198,25 @@ mod tests {
         );
         assert_eq!(map.len(), 1);
         assert_eq!(map["photos"], PathBuf::from("phone/photos"));
+    }
+
+    #[test]
+    fn roots_include_paused_and_not_allowlisted_folders() {
+        let folders = vec![
+            folder("photos", "/var/syncthing/phone", false),
+            folder("laptop", "/var/syncthing/phone/shared", false),
+            folder("paused", "/var/syncthing/phone/old", true),
+            folder("outside", "/home/user/docs", false),
+        ];
+        let roots = folder_roots(&folders, &cfg(Some(&["photos"])));
+        assert_eq!(
+            roots,
+            FolderRoots::from([
+                PathBuf::from("phone"),
+                PathBuf::from("phone/shared"),
+                PathBuf::from("phone/old"),
+            ])
+        );
     }
 
     #[test]
