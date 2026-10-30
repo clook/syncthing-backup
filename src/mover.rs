@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 const MAX_SUFFIX: u32 = 10_000;
 /// Reserved name of the in-progress copy in each destination directory. Fixed and short, so long
 /// source names cannot overflow NAME_MAX, and only one exists per directory (single worker).
-pub const TMP_NAME: &str = ".syncthing-backup.tmp";
+/// The random token makes a clash with a real file practically impossible.
+pub const TMP_NAME: &str = ".syncthing-backup-7f3a9c2e.tmp";
 const NAME_MAX: usize = 255;
 
 /// A source file and where it belongs in the backup.
@@ -53,6 +54,9 @@ impl std::error::Error for WitnessMissing {}
 
 #[derive(Debug, Clone)]
 pub struct MoveOptions {
+    /// Backup root (`DESTINATION_DIRECTORY`): directories up to it are fsynced, and its device must
+    /// not change during a move when a witness is configured.
+    pub dst_root: PathBuf,
     /// Full path of the witness file; nothing is written while it is missing.
     pub witness: Option<PathBuf>,
     pub verify: bool,
@@ -74,7 +78,7 @@ enum Target {
 /// use that inode, so a newer version renamed into place by Syncthing meanwhile is never deleted
 /// and never makes a correct copy of the previous version look wrong (decision 0008).
 pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
-    check_witness(opts, None)?;
+    let root_dev = check_witness(opts)?;
     if job.dst.file_name() == Some(OsStr::new(TMP_NAME)) {
         bail!("{:?} uses the reserved name {}", job.src, TMP_NAME);
     }
@@ -105,8 +109,8 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
                 }
                 // The existing copy may never have been made durable (e.g. a crash after link).
                 sync_file(&existing)?;
-                sync_dir(parent_of(&existing)?)?;
-                check_witness(opts, Some(&existing))?;
+                sync_ancestors(parent_of(&existing)?, &opts.dst_root)?;
+                confirm_mount(opts, root_dev)?;
                 remove_source(&job.src, &src_meta)?;
                 return Ok(Outcome::Duplicate(existing));
             }
@@ -117,9 +121,10 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
         }
 
         let parent = parent_of(&target)?;
-        create_dirs_durable(parent)?;
+        fs::create_dir_all(parent).with_context(|| format!("create {:?}", parent))?;
 
         let same_device = fs::metadata(parent)?.dev() == src_meta.dev();
+        let mut linked = false;
         let placed = if opts.allow_link && same_device {
             match link_no_replace(&job.src, &target) {
                 // Same st_dev but different mounts (bind mounts): fall back to copying.
@@ -132,6 +137,7 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
                     if placed {
                         ensure_linked_same_inode(&target, &src_meta)?;
                         sync_file(&target)?;
+                        linked = true;
                     }
                     placed
                 }
@@ -142,9 +148,11 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
         if !placed {
             continue; // target name appeared meanwhile: pick another
         }
-        sync_dir(parent)?;
+        // Also covers directories created above and ones never fsynced by an earlier run.
+        sync_ancestors(parent, &opts.dst_root)?;
 
-        if opts.verify && !same_content(&mut src_file, &target)? {
+        // A hard link is the same inode: nothing to compare.
+        if opts.verify && !linked && !same_content(&mut src_file, &target)? {
             // The copy was read from the very inode we compare against, so it is really wrong.
             // Only the file this attempt created is removed; the source is kept for a retry.
             fs::remove_file(&target).with_context(|| format!("remove unverified {:?}", target))?;
@@ -155,25 +163,39 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
             );
         }
 
-        check_witness(opts, Some(&target))?;
+        if let Err(e) = confirm_mount(opts, root_dev) {
+            // Probably written to the bare mount point: do not leave it there.
+            let _ = fs::remove_file(&target);
+            return Err(e);
+        }
         remove_source(&job.src, &src_meta)?;
         return Ok(Outcome::Moved(target));
     }
     bail!("could not find a free destination name for {:?}", job.src)
 }
 
-/// Fails with `WitnessMissing` if the witness is absent or, when `written` is given, if that file
-/// is not on the witness's filesystem (destination unmounted during the copy).
-fn check_witness(opts: &MoveOptions, written: Option<&Path>) -> Result<()> {
+/// Fails with `WitnessMissing` if a witness is configured and absent. Returns the device of the
+/// backup root, to detect an unmount during the move.
+fn check_witness(opts: &MoveOptions) -> Result<Option<u64>> {
+    let Some(w) = &opts.witness else {
+        return Ok(None);
+    };
+    if !w.exists() {
+        return Err(WitnessMissing(w.clone()).into());
+    }
+    let root = fs::metadata(&opts.dst_root).with_context(|| format!("stat {:?}", opts.dst_root))?;
+    Ok(Some(root.dev()))
+}
+
+/// Before the source is removed: the witness is still there and the backup root is still the same
+/// filesystem (an unmount during a long copy changes its device). Subvolumes or mounts *below* the
+/// root are fine.
+fn confirm_mount(opts: &MoveOptions, root_dev: Option<u64>) -> Result<()> {
     let Some(w) = &opts.witness else {
         return Ok(());
     };
-    let Ok(witness_meta) = fs::metadata(w) else {
-        return Err(WitnessMissing(w.clone()).into());
-    };
-    if let Some(path) = written
-        && fs::metadata(path)?.dev() != witness_meta.dev()
-    {
+    let same_root = fs::metadata(&opts.dst_root).map(|m| Some(m.dev()) == root_dev);
+    if !w.exists() || !matches!(same_root, Ok(true)) {
         return Err(WitnessMissing(w.clone()).into());
     }
     Ok(())
@@ -183,29 +205,14 @@ fn parent_of(path: &Path) -> Result<&Path> {
     path.parent().context("destination has no parent directory")
 }
 
-/// Like `create_dir_all`, but fsyncs the parent of every directory it creates, so a new subtree
-/// survives a power loss once the source is gone.
-fn create_dirs_durable(dir: &Path) -> Result<()> {
-    let mut missing = Vec::new();
-    let mut cur = dir;
-    loop {
-        match fs::symlink_metadata(cur) {
-            Ok(m) if m.is_dir() => break,
-            Ok(_) => bail!("{:?} exists and is not a directory", cur),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                missing.push(cur);
-                cur = cur.parent().context("no existing ancestor directory")?;
-            }
-            Err(e) => return Err(e).with_context(|| format!("stat {:?}", cur)),
+/// fsyncs `dir` and each ancestor up to and including `root`, so every directory entry leading to
+/// the new file is durable. Cheap for directories without pending changes.
+fn sync_ancestors(dir: &Path, root: &Path) -> Result<()> {
+    for d in dir.ancestors() {
+        sync_dir(d)?;
+        if d == root || !d.starts_with(root) {
+            break;
         }
-    }
-    for d in missing.into_iter().rev() {
-        match fs::create_dir(d) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e).with_context(|| format!("create {:?}", d)),
-        }
-        sync_dir(parent_of(d)?)?;
     }
     Ok(())
 }
@@ -318,19 +325,43 @@ fn copy_durable(src: &mut File, src_meta: &fs::Metadata, target: &Path) -> Resul
 
 /// Removes the source, unless the path now points to another file (e.g. Syncthing renamed a newer
 /// version into place since we copied it).
+///
+/// Checking and then unlinking by path would leave a window where a newer version renamed in
+/// between gets deleted. Instead the path is first renamed (atomically, whatever it holds now) to a
+/// private name, checked there, and only then unlinked; a newer file is linked back.
 fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
-    let now = fs::symlink_metadata(src).with_context(|| format!("stat {:?}", src))?;
-    if now.ino() != copied.ino()
-        || now.dev() != copied.dev()
-        || now.len() != copied.len()
-        || now.mtime() != copied.mtime()
-    {
-        bail!(
-            "{:?} changed during the move; keeping it for the next pass",
-            src
-        );
+    let mut private_name = OsStr::new(".syncthing-backup-removing-").to_os_string();
+    private_name.push(copied.ino().to_string());
+    let private = src.with_file_name(private_name);
+    if fs::symlink_metadata(&private).is_err() {
+        fs::rename(src, &private).with_context(|| format!("rename source {:?}", src))?;
     }
-    fs::remove_file(src).with_context(|| format!("remove source {:?}", src))
+    // Else: leftover of an interrupted attempt for this inode; examine it the same way.
+    let taken = fs::symlink_metadata(&private).with_context(|| format!("stat {:?}", private))?;
+    if taken.ino() == copied.ino()
+        && taken.dev() == copied.dev()
+        && taken.len() == copied.len()
+        && taken.mtime() == copied.mtime()
+    {
+        return fs::remove_file(&private).with_context(|| format!("remove source {:?}", private));
+    }
+    match fs::hard_link(&private, src) {
+        Ok(()) => {
+            fs::remove_file(&private).with_context(|| format!("remove {:?}", private))?;
+            bail!(
+                "{:?} changed during the move; keeping it for the next pass",
+                src
+            )
+        }
+        // Left under the private name: it is not a Syncthing temp name, so it is neither cleaned
+        // up by Syncthing nor skipped by the scanner, and will be backed up under that name.
+        Err(e) => bail!(
+            "{:?} changed during the move and could not be put back ({}); kept as {:?}",
+            src,
+            e,
+            private
+        ),
+    }
 }
 
 fn sync_file(path: &Path) -> Result<()> {
@@ -408,6 +439,7 @@ mod tests {
 
     fn opts(allow_link: bool) -> MoveOptions {
         MoveOptions {
+            dst_root: PathBuf::from("/"),
             witness: None,
             verify: true,
             dry_run: false,
@@ -602,6 +634,29 @@ mod tests {
         fs::rename(&newer, &j.src).unwrap();
         assert!(remove_source(&j.src, &copied).is_err());
         assert_eq!(fs::read(&j.src).unwrap(), b"v2-longer");
+        let leftovers: Vec<_> = fs::read_dir(&env.src)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| {
+                n.to_string_lossy()
+                    .starts_with(".syncthing-backup-removing")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "{:?}", leftovers);
+    }
+
+    #[test]
+    fn interrupted_removal_is_completed() {
+        // Crash after the source was renamed to its private name but before the unlink.
+        let env = env();
+        let j = job(&env, "a.jpg", b"v1");
+        let copied = fs::symlink_metadata(&j.src).unwrap();
+        let private = env
+            .src
+            .join(format!(".syncthing-backup-removing-{}", copied.ino()));
+        fs::rename(&j.src, &private).unwrap();
+        remove_source(&j.src, &copied).unwrap();
+        assert!(!private.exists());
     }
 
     #[test]

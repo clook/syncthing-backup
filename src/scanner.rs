@@ -1,7 +1,7 @@
 //! Rebuilds the queue from the source folders: every regular file left there is pending
 //! (docs/decisions/0002).
 
-use crate::mover::Job;
+use crate::mover::{self, Job};
 use crate::syncthing::FolderMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -86,6 +86,10 @@ fn walk(
             }
         };
         if is_ignored(&entry.file_name()) {
+            continue;
+        }
+        if entry.file_name() == mover::TMP_NAME {
+            warn!("Skipping {:?}: reserved name", entry.path());
             continue;
         }
         let path = entry.path();
