@@ -31,6 +31,17 @@ This is the user's backup path: **correctness beats features and speed.**
 - Tick the task's checkbox and add a dated line to its **Progress log** in the same commit as the code.
 - Prefix commit messages with the task ID (e.g. `T4: …`).
 
+## Decisions and evidence
+- Every product, technical or process decision gets a record in `docs/decisions/NNNN-<slug>.md` (template and
+  rules in `docs/decisions/README.md`). A record states who decided: the user (quoted) or Claude with the
+  user's approval.
+- Evidence is mandatory. Cite code as `path:line @ <commit>`, docs as URL + short quote + retrieval date,
+  upstream source pinned to a commit, and tests by name. Anything not checked is labelled **unverified**.
+  Never present an assumption as a fact.
+- Accepted records are never rewritten. Supersede them with a new record.
+- Plans and review records link to the decisions they apply. A review finding that changes the design
+  needs a decision record.
+
 ## Review harness (mandatory before any push)
 Every task, or set of tasks, goes through this loop before it is pushed to GitHub:
 
@@ -46,7 +57,8 @@ Every task, or set of tasks, goes through this loop before it is pushed to GitHu
    finding that is not fixed needs a written reason.
 4. **Record:** add `docs/reviews/NNNN-<tasks>.md` (template in `docs/reviews/README.md`), with
    `Reviewed-Commit:` set to the last code commit, the findings table with their resolutions, and the
-   review.sh result. Commit it, and add a line to the plan's progress log.
+   review.sh result. Save the full `scripts/review.sh` output as `docs/reviews/NNNN-<tasks>.log` (evidence).
+   Commit both, and add a line to the plan's progress log.
 5. **Push:** the `pre-push` hook (`.githooks/pre-push`) runs `scripts/check-reviewed.sh` and
    `scripts/review.sh`. It refuses a push if the code changed since the last review record, if any check
    fails, or if the working tree is dirty. CI (`.github/workflows/ci.yml`) runs the same two scripts.

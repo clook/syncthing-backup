@@ -19,6 +19,8 @@ or overwrite a file and must never silently leave a file behind. Review of `src/
   responses; `to_str().unwrap()` panics on non-UTF8 names; dry-run consumes events; retry entries for
   vanished sources never removed; ConfigSaved refresh errors ignored.
 
+Decision records (with evidence): `docs/decisions/0001`–`0007`.
+
 Decisions made with the user: drop Redis and use the **source folder as the durable queue** (scan + events
 → single sequential worker); conflicts = **keep both (suffix), never overwrite**; only phone folders on the
 instance, add an **optional `FOLDER_IDS` allowlist**.
@@ -43,6 +45,9 @@ The plan lives **in the repo**, not only in this session's plan file:
 - [x] **T1b** Review harness (user request): `scripts/review.sh`, `scripts/check-reviewed.sh`,
       `.githooks/pre-push`, `.github/workflows/ci.yml`, `docs/reviews/`, process described in `CLAUDE.md`.
       Review sets: **R1** = T2–T6 (core rework), **R2** = T7–T8. Each set is reviewed before it is pushed.
+- [x] **T1c** Decision records with evidence (user request): `docs/decisions/` 0001–0007, rules in
+      `CLAUDE.md`. Removing the Redis/`config` deps moves from T7 to T6 (review.sh checks "no Redis", and R1
+      covers T2–T6).
 - [ ] **T2** `config.rs`: new and removed env vars, warnings for obsolete ones.
 - [ ] **T3** `syncthing.rs`: folders (+ `paused`, `FOLDER_IDS`), event polling with status checks and
       backoff, `startTime`.
@@ -120,8 +125,9 @@ startup scan re-discovers anything not finished. No external state.
     own tokio task and only does an in-memory insert (no disk I/O, never awaits the worker); the copy runs
     in `spawn_blocking`, so polling continues while the HDD is busy. The 100 small files are queued as
     their events arrive and handled one by one after the 1 GB file.
-  - **Missed events are caught anyway (drain-then-rescan)**: Syncthing's event buffer can still overflow,
-    and with an `events=` filter, gaps in IDs can't be told apart from overflow. So whenever the worker
+  - **Gap detection** (decision 0003): a filtered subscription gets its own consecutive IDs, so if the
+    first returned ID is greater than `since + 1`, events were dropped and a rescan is triggered.
+  - **Missed events are caught anyway (drain-then-rescan)**: whenever the worker
     empties the queue after processing ≥1 item, it starts a source scan (readdir + stat on the SSD only,
     cheap). Any file whose event was lost is picked up right after the burst, not 15 min later.
   - Scan task: at startup, after each drained burst, and every `SCAN_INTERVAL_SECS`; log `pending N, oldest Xh` and `warn!` if any
@@ -163,3 +169,9 @@ Run checks after each task (and record the result in the plan's progress log):
 
 - 2026-10-30 — Plan agreed. T1: plan + CLAUDE.md added, baseline commit 1057e25 (fetch_folders refactor).
 - 2026-10-30 — T1b: review harness added (user asked for a review gate before any push).
+- 2026-10-30 — Harness self-test: review.sh on the old code failed on fmt, clippy, unwraps (main.rs:139-140),
+  file operations outside the mover (main.rs:181-189) and Redis. check-reviewed.sh refused a tree with no
+  review record. Both behave as intended.
+- 2026-10-30 — T1c: decision records added. Syncthing source checked (pinned ed38528): event IDs are
+  per-subscription, in memory only, with a 1000-event buffer. This corrects the plan draft, which said gaps
+  could not be detected with a filter. Gap detection added (decision 0003).
