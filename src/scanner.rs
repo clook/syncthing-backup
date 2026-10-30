@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Debug, Default)]
 pub struct ScanResult {
@@ -24,13 +24,18 @@ pub struct ScanResult {
     pub leftovers: usize,
 }
 
-/// Syncthing's own bookkeeping and in-progress files.
-pub fn is_ignored(name: &OsStr) -> bool {
+/// Syncthing's marker of a folder root; a subdirectory holding one is another folder.
+const FOLDER_MARKER: &str = ".stfolder";
+
+/// Syncthing's own bookkeeping (only at the folder root, deeper they are ordinary synced files)
+/// and in-progress files (anywhere).
+pub fn is_ignored(name: &OsStr, at_root: bool) -> bool {
     let n = name.as_bytes();
-    n == b".stfolder"
-        || n == b".stignore"
-        || n == b".stversions"
-        || n.starts_with(b".stfolder.removed-")
+    (at_root
+        && (n == FOLDER_MARKER.as_bytes()
+            || n == b".stignore"
+            || n == b".stversions"
+            || n.starts_with(b".stfolder.removed-")))
         || (n.starts_with(b".syncthing.") && n.ends_with(b".tmp"))
         || (n.starts_with(b"~syncthing~") && n.ends_with(b".tmp"))
 }
@@ -78,6 +83,7 @@ fn walk(
             return;
         }
     };
+    let at_root = dir == src_base;
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -87,7 +93,7 @@ fn walk(
                 continue;
             }
         };
-        if is_ignored(&entry.file_name()) {
+        if is_ignored(&entry.file_name(), at_root) {
             continue;
         }
         if entry
@@ -115,6 +121,12 @@ fn walk(
             Err(_) => continue, // vanished meanwhile
         };
         if meta.is_dir() {
+            // A nested Syncthing folder (paused, not in FOLDER_IDS, or mapped on its own) is never
+            // processed as part of this one.
+            if fs::symlink_metadata(path.join(FOLDER_MARKER)).is_ok() {
+                debug!("Skipping {:?}: root of another Syncthing folder", path);
+                continue;
+            }
             walk(&path, src_base, dst_base, min_age, now, out);
         } else if meta.file_type().is_file() {
             let changed = UNIX_EPOCH
@@ -153,11 +165,21 @@ mod tests {
             "~syncthing~a.jpg.tmp",
             ".stfolder.removed-123",
         ] {
-            assert!(is_ignored(OsStr::new(name)), "{}", name);
+            assert!(is_ignored(OsStr::new(name), true), "{}", name);
         }
         for name in ["a.jpg", ".hidden", "syncthing.tmp", ".syncthing.notes"] {
-            assert!(!is_ignored(OsStr::new(name)), "{}", name);
+            assert!(!is_ignored(OsStr::new(name), true), "{}", name);
         }
+        // Below the root, only temporary files are Syncthing's.
+        for name in [
+            ".stfolder",
+            ".stignore",
+            ".stversions",
+            ".stfolder.removed-1",
+        ] {
+            assert!(!is_ignored(OsStr::new(name), false), "{}", name);
+        }
+        assert!(is_ignored(OsStr::new(".syncthing.a.jpg.tmp"), false));
     }
 
     #[test]
@@ -166,11 +188,15 @@ mod tests {
         let src = dir.path().join("st");
         let dst = dir.path().join("hdd");
         let folder = src.join("phone/photos");
-        fs::create_dir_all(folder.join("DCIM/.stversions")).unwrap();
+        fs::create_dir_all(folder.join(".stversions")).unwrap();
         fs::create_dir_all(folder.join(".stfolder")).unwrap();
+        fs::create_dir_all(folder.join("DCIM")).unwrap();
         fs::write(folder.join("DCIM/a.jpg"), b"a").unwrap();
         fs::write(folder.join("DCIM/.syncthing.b.jpg.tmp"), b"partial").unwrap();
-        fs::write(folder.join("DCIM/.stversions/old.jpg"), b"v").unwrap();
+        fs::write(folder.join(".stversions/old.jpg"), b"v").unwrap();
+        // A nested Syncthing folder is left alone.
+        fs::create_dir_all(folder.join("shared/.stfolder")).unwrap();
+        fs::write(folder.join("shared/laptop.txt"), b"l").unwrap();
         std::os::unix::fs::symlink("/etc/passwd", folder.join("link")).unwrap();
 
         let folders = FolderMap::from([("photos".to_string(), PathBuf::from("phone/photos"))]);
@@ -185,6 +211,12 @@ mod tests {
         );
         assert_eq!(r.errors, 0);
         assert_eq!(r.leftovers, 0);
+
+        // Below the root, Syncthing's names are ordinary synced files.
+        fs::write(folder.join("DCIM/.stignore"), b"n").unwrap();
+        let r = scan(&src, &dst, &folders, Duration::from_secs(60), later);
+        assert_eq!(r.jobs.len(), 2);
+        fs::remove_file(folder.join("DCIM/.stignore")).unwrap();
 
         // Same files seen "now" are too young.
         let r = scan(

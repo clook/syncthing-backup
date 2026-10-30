@@ -18,6 +18,8 @@ const OBSOLETE_VARS: &[(&str, &str)] = &[
     ),
 ];
 
+const MIN_SCAN_INTERVAL_SECS: u64 = 10;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub st_url: String,
@@ -73,7 +75,7 @@ impl AppConfig {
             witness_file: std::env::var("WITNESS_FILE").ok().filter(|s| !s.is_empty()),
             dry_run: env_bool("DRY_RUN", false)?,
             folder_ids,
-            scan_interval: Duration::from_secs(env_u64("SCAN_INTERVAL_SECS", 900)?),
+            scan_interval: Duration::from_secs(scan_interval_secs()?),
             verify_copy: env_bool("VERIFY_COPY", true)?,
             min_age: Duration::from_secs(env_u64("MIN_AGE_SECS", 30)?),
         })
@@ -89,6 +91,19 @@ fn env_bool(name: &str, default: bool) -> Result<bool> {
             _ => anyhow::bail!("Env var {} must be true/false, got {:?}", name, v),
         },
     }
+}
+
+/// 0 would rescan the whole source tree in a tight loop.
+fn scan_interval_secs() -> Result<u64> {
+    let secs = env_u64("SCAN_INTERVAL_SECS", 900)?;
+    if secs < MIN_SCAN_INTERVAL_SECS {
+        anyhow::bail!(
+            "Env var SCAN_INTERVAL_SECS must be at least {}, got {}",
+            MIN_SCAN_INTERVAL_SECS,
+            secs
+        );
+    }
+    Ok(secs)
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {

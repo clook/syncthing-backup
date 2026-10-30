@@ -33,7 +33,7 @@ Phone (Send Only, Ignore Delete) ──Syncthing──► server folder (Receive
 | Device | Folder type | Option |
 |--------|-------------|--------|
 | Phone  | Send Only   | *Ignore Delete* enabled |
-| Server | **Receive Only** | Do not click "Revert Local Changes": it downloads everything again. That is harmless (duplicates are detected) but wastes transfer |
+| Server | **Receive Only** | Avoid "Revert Local Changes": it downloads everything again (duplicates are detected, but it wastes transfer) and deletes local additions, such as `.syncthing-backup-removing-*` leftovers |
 
 Why not Send & Receive: the end-to-end tests showed that a photo edited on the phone *after* its first backup
 is then never transferred again, because Syncthing keeps the server's deletion as the winning version
@@ -45,15 +45,21 @@ the phone folders when the server shares other folders.
    the new file is saved as `photo_1.jpg` (then `_2`, …). If identical content is already there, the source
    is simply removed.
 2. **The source is removed only after the copy is safe.** The file is copied under a temporary name and
-   fsynced, then given its final name (an atomic operation that never replaces an existing file). It is
-   then compared byte for byte with the source (`VERIFY_COPY`). Only then is the source removed, and only
-   if it is still the same file that was copied.
+   fsynced, compared byte for byte with the source (`VERIFY_COPY`), then given its final name (an atomic
+   operation that never replaces an existing file). Only then is the source removed, and only if it is
+   still the same file that was copied.
 3. **Destination not mounted, nothing written.** If `WITNESS_FILE` is missing, the porter pauses and logs
    an error.
 4. **Failures are never silent.** A file that cannot be moved stays in the source and is retried on the
    next scan. Repeated failures are logged as errors. A file still waiting after 24h is reported on every
    scan.
 5. **Modification times are preserved.**
+6. **Only the configured folders are touched.** A subdirectory that is the root of another Syncthing folder
+   (it holds a `.stfolder` marker) is skipped, even if that folder is paused or not in `FOLDER_IDS`.
+
+**Destination requirement:** the backup filesystem must support hard links (ext4, XFS, btrfs, ZFS, NFS).
+They are how a finished copy gets its name without ever replacing a file. exFAT/FAT disks and many SMB
+shares do not support them, and every move then fails with an error that says so.
 
 Not covered: the HDD is a **single copy**. A copy verified right after writing is read back mostly from
 memory, so later disk corruption is not detected. For a real 3-2-1 backup, back up the destination offsite
@@ -71,7 +77,7 @@ checksumming filesystem or regular `restic check` runs.
 | `SYNCTHING_STORAGE_DIRECTORY` | `/` | Storage root *as Syncthing sees it*. Folder paths are made relative to it |
 | `WITNESS_FILE` | *(none, strongly recommended)* | File that must exist in `DESTINATION_DIRECTORY`, e.g. `.mounted` |
 | `FOLDER_IDS` | *(all folders under the storage root)* | Comma-separated Syncthing folder IDs to process |
-| `SCAN_INTERVAL_SECS` | `900` | Periodic full scan |
+| `SCAN_INTERVAL_SECS` | `900` | Periodic full scan (minimum 10) |
 | `MIN_AGE_SECS` | `30` | Scans skip files changed more recently than this |
 | `VERIFY_COPY` | `true` | Compare destination with source before removing the source |
 | `DRY_RUN` | `false` | Log what would happen; write or remove nothing |
