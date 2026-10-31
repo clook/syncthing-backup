@@ -81,5 +81,8 @@ grows with copies nobody restores.
   under a free suffixed name such as `app_1.db` and backs it up under that name. If the rule matches and a
   pre-rule `app_1.db` already exists in the backup, it is replaced. Both are older versions of the same
   matched file, which this decision discards anyway.
+- The "same file" check uses device and inode. A backup file deleted and recreated under the same inode
+  number between the comparison and the rename (ext4 reuses numbers) is not detected; that needs another
+  writer in the backup directory during a move, which invariant 3 excludes.
 - A replace reads more data than a normal move (comparison with the previous copy, copy, verification):
   about five full passes for a same-size file. Accepted: correctness over speed.

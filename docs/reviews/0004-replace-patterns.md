@@ -1,12 +1,12 @@
 # 0004 — Review of R2–R6 (replace rules)
 
-Reviewed-Commit: e6b1dab
-Range: 2df17a2..e6b1dab
+Reviewed-Commit: 5a4e75f
+Range: 2df17a2..5a4e75f
 Plan: docs/plans/0003-replace-patterns.md
 Decisions applied: 0012 (proposed; amended by the fixes below before acceptance)
 
 ## Mechanical checks
-scripts/review.sh at e6b1dab: passed (51 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
+scripts/review.sh at 5a4e75f: passed (51 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
 installed, skipped). Full output: `0004-replace-patterns.log`.
 
 ## End-to-end
@@ -24,6 +24,11 @@ including the new `replace`:
   `/code-review` run. One edge checked: if the name is swapped for a symlink between the stat and the open
   in `resolve_replace`, `File::open` follows it, but the identity check before the rename uses
   `symlink_metadata`, so the move fails instead of replacing.
+- 5a4e75f (test only, reviewed inline): CI on ext4 failed `replace_refuses_a_changed_target`. The test
+  deleted and recreated the backup file, and ext4 reused the inode number, so the "other" file had the same
+  identity. The test now moves the compared file aside. Limitation recorded: identity is device + inode,
+  so a file deleted and recreated under the same inode number between the comparison and the rename is
+  not detected. That needs another writer in the backup directory during a move (invariant 3).
 
 Severity: high = can lose or hide a backup; medium = can stall backups or break an invariant without
 loss; low = efficiency, docs, or a narrow edge case.
