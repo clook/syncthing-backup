@@ -136,8 +136,9 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
     // atomically, so re-resolve instead of ever replacing a file.
     for attempt in 0..3 {
         if attempt > 0 {
-            // A vanished name may mean an unmount: never retry onto the mountpoint.
-            check_witness(opts)?;
+            // A retry follows a name that appeared meanwhile (link: EEXIST). It must still write
+            // to the same backup filesystem, not one mounted there since.
+            confirm_mount(opts, root_dev)?;
         }
         let resolved = if replace {
             resolve_replace(&mut src_file, &job.dst)?
@@ -387,11 +388,20 @@ fn resolve_replace(src: &mut File, dst: &Path) -> Result<Target> {
     match fs::symlink_metadata(dst) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Target::Free(dst.to_path_buf())),
         Err(e) => Err(e).with_context(|| format!("stat {:?}", dst)),
-        Ok(m) if m.file_type().is_file() => Ok(if same_content(src, dst)? {
-            Target::Identical(dst.to_path_buf())
-        } else {
-            Target::Replace(dst.to_path_buf(), FileId::of(&m))
-        }),
+        Ok(m) if m.file_type().is_file() => {
+            // The identity comes from the file actually opened and compared, not from the stat
+            // above: the name could have changed in between.
+            let mut existing = File::open(dst).with_context(|| format!("open {:?}", dst))?;
+            let opened = existing.metadata()?;
+            if !opened.file_type().is_file() {
+                bail!("{:?} changed while being compared", dst);
+            }
+            Ok(if same_content_files(src, &mut existing)? {
+                Target::Identical(dst.to_path_buf())
+            } else {
+                Target::Replace(dst.to_path_buf(), FileId::of(&opened))
+            })
+        }
         Ok(_) => {
             warn!(
                 "{:?} matches REPLACE_PATTERNS but is not a regular file: keeping both",
@@ -499,9 +509,16 @@ fn copy_durable(
             Place::Replace(old) => {
                 // The previous copy is discarded only for a stable source: a file written to
                 // during the copy may have been read half-updated.
+                // ctime cannot be set back by a writer, unlike mtime.
                 let now = src.metadata()?;
                 if now.len() != src_meta.len()
-                    || (now.mtime(), now.mtime_nsec()) != (src_meta.mtime(), src_meta.mtime_nsec())
+                    || (now.mtime(), now.mtime_nsec(), now.ctime(), now.ctime_nsec())
+                        != (
+                            src_meta.mtime(),
+                            src_meta.mtime_nsec(),
+                            src_meta.ctime(),
+                            src_meta.ctime_nsec(),
+                        )
                 {
                     bail!("source changed during the copy; previous backup kept");
                 }
@@ -556,7 +573,7 @@ fn remove_source(src: &Path, copied: &fs::Metadata) -> Result<()> {
     if taken.file_type().is_file()
         && FileId::of(&taken) == FileId::of(copied)
         && taken.len() == copied.len()
-        && taken.mtime() == copied.mtime()
+        && (taken.mtime(), taken.mtime_nsec()) == (copied.mtime(), copied.mtime_nsec())
     {
         fs::remove_file(&private).with_context(|| format!("remove source {:?}", private))?;
         return Ok(());
@@ -677,6 +694,10 @@ fn sync_dir(dir: &Path) -> Result<()> {
 /// buffers so short reads cannot cause a false "different".
 fn same_content(src: &mut File, other: &Path) -> Result<bool> {
     let mut other_file = File::open(other).with_context(|| format!("open {:?}", other))?;
+    same_content_files(src, &mut other_file)
+}
+
+fn same_content_files(src: &mut File, other_file: &mut File) -> Result<bool> {
     if src.metadata()?.len() != other_file.metadata()?.len() {
         return Ok(false);
     }
@@ -685,7 +706,7 @@ fn same_content(src: &mut File, other: &Path) -> Result<bool> {
     let mut buf2 = vec![0u8; 1024 * 512];
     loop {
         let n1 = fill(src, &mut buf1)?;
-        let n2 = fill(&mut other_file, &mut buf2)?;
+        let n2 = fill(other_file, &mut buf2)?;
         if n1 != n2 || buf1[..n1] != buf2[..n2] {
             return Ok(false);
         }

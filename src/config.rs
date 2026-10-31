@@ -64,10 +64,8 @@ impl ReplaceRules {
         }
         let mut builder = GlobSetBuilder::new();
         for p in &patterns {
-            if p.starts_with('/')
-                || p.ends_with('/')
-                || p.split('/').any(|c| c == "." || c == ".." || c.is_empty())
-            {
+            // An empty component also rejects a leading or trailing `/` and `//`.
+            if p.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
                 anyhow::bail!(
                     "REPLACE_PATTERNS: {:?} must be a relative path like `folder/dir/**`, without `.`, `..`, `//` or a trailing `/`",
                     p
@@ -112,11 +110,21 @@ impl ReplaceRules {
     }
 }
 
-/// Splits on commas outside `{…}` alternations.
+/// Splits on commas outside `{…}` alternations. Braces inside `[…]` classes or escaped with `\\`
+/// are literal and do not count.
 fn split_patterns(spec: &str) -> Vec<&str> {
     let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0);
+    let (mut escaped, mut class) = (false, false);
     for (i, c) in spec.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match c {
+            '\\' => escaped = true,
+            '[' if !class => class = true,
+            ']' if class => class = false,
+            _ if class => {}
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
@@ -138,8 +146,7 @@ impl AppConfig {
             }
         }
 
-        let folder_ids = std::env::var("FOLDER_IDS")
-            .ok()
+        let folder_ids = Some(env_string("FOLDER_IDS")?)
             .map(|v| {
                 v.split(',')
                     .map(str::trim)
@@ -150,8 +157,7 @@ impl AppConfig {
             .filter(|s| !s.is_empty());
 
         Ok(Self {
-            st_url: std::env::var("SYNCTHING_URL")
-                .unwrap_or_else(|_| "http://localhost:8384".into()),
+            st_url: env_or("SYNCTHING_URL", "http://localhost:8384")?,
             st_api_key: std::env::var("SYNCTHING_KEY")
                 .context("Env var SYNCTHING_KEY is required")?,
             src_dir: PathBuf::from(
@@ -162,10 +168,8 @@ impl AppConfig {
                 std::env::var("DESTINATION_DIRECTORY")
                     .context("Env var DESTINATION_DIRECTORY is required")?,
             ),
-            st_storage_dir: PathBuf::from(
-                std::env::var("SYNCTHING_STORAGE_DIRECTORY").unwrap_or_else(|_| "/".into()),
-            ),
-            witness_file: std::env::var("WITNESS_FILE").ok().filter(|s| !s.is_empty()),
+            st_storage_dir: PathBuf::from(env_or("SYNCTHING_STORAGE_DIRECTORY", "/")?),
+            witness_file: Some(env_string("WITNESS_FILE")?).filter(|s| !s.is_empty()),
             dry_run: env_bool("DRY_RUN", false)?,
             folder_ids,
             scan_interval: Duration::from_secs(scan_interval_secs()?),
@@ -178,16 +182,22 @@ impl AppConfig {
 
 /// Empty when unset; an error (not a silent default) when not valid UTF-8.
 fn env_string(name: &str) -> Result<String> {
+    env_or(name, "")
+}
+
+/// `default` when unset; an error (not a silent default) when not valid UTF-8.
+fn env_or(name: &str, default: &str) -> Result<String> {
     match std::env::var(name) {
         Ok(v) => Ok(v),
-        Err(std::env::VarError::NotPresent) => Ok(String::new()),
+        Err(std::env::VarError::NotPresent) => Ok(default.to_string()),
         Err(e) => Err(e).with_context(|| format!("Env var {}", name)),
     }
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool> {
     match std::env::var(name) {
-        Err(_) => Ok(default),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(e).with_context(|| format!("Env var {}", name)),
         Ok(v) => match v.to_ascii_lowercase().as_str() {
             "true" | "1" | "yes" => Ok(true),
             "false" | "0" | "no" | "" => Ok(false),
@@ -211,7 +221,8 @@ fn scan_interval_secs() -> Result<u64> {
 
 fn env_u64(name: &str, default: u64) -> Result<u64> {
     match std::env::var(name) {
-        Err(_) => Ok(default),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(e).with_context(|| format!("Env var {}", name)),
         Ok(v) => v
             .parse()
             .with_context(|| format!("Env var {} must be an integer, got {:?}", name, v)),
@@ -280,6 +291,13 @@ mod tests {
         let r = rules("Apps/**/*.{db,bak}, Other/x");
         assert_eq!(r.patterns, vec!["Apps/**/*.{db,bak}", "Other/x"]);
         assert!(r.matches(Path::new("Apps/a/app.bak")));
+    }
+
+    #[test]
+    fn replace_patterns_literal_braces_do_not_join() {
+        let r = rules(r"Apps/[{]x, Apps/\{y, phone/Backups/**");
+        assert_eq!(r.patterns.len(), 3, "{:?}", r.patterns);
+        assert!(r.matches(Path::new("phone/Backups/a.db")));
     }
 
     #[test]

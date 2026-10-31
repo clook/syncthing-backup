@@ -32,10 +32,11 @@ grows with copies nobody restores.
   temporary file over the previous copy, then the usual directory fsync, identity, mount and source
   removal steps (0006, 0008, 0010).
 - Added after review 0004, before acceptance. The rename happens only if:
-  - the source's size and mtime are unchanged since the move started (a file written to during the copy
-    may have been read half-updated);
-  - the backup copy is still the file whose content was compared (same device and inode). Otherwise the
-    move fails and the source is retried later; it never retries onto a possibly unmounted destination.
+  - the source's size, mtime and ctime are unchanged since the move started (a file written to during the
+    copy may have been read half-updated; ctime cannot be set back by the writer);
+  - the backup copy is still the file whose content was compared (same device and inode, taken from the
+    opened file). Otherwise the move fails and the source is retried later; it never retries onto a
+    possibly unmounted or swapped destination.
 - If the mount check fails after the rename, the new copy is kept (the previous one is already gone); the
   source stays and is deduplicated on the next pass.
 - Invariant 1 becomes: never overwrite or modify an existing destination file, except paths matching
