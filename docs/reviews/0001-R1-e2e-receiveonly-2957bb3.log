@@ -1,0 +1,41 @@
+# tests/e2e/run.sh @ 2957bb3, Syncthing v2.1.7, 2026-10-30
+
+[23:37:10] Setup in /tmp/claude-1000/-home-ocloirec-Work-clook-syncthing-backup/e178d914-e821-45c2-9404-2e3c79b13c75/scratchpad/e2e (source) and /home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd (destination); server folder type: receiveonly
+{
+  "ping": "pong"
+}
+{
+  "ping": "pong"
+}
+phone=JABLBIP-2GCVRGD-MYUUJGA-S6SIQKW-NNTA6WC-LBWJ53W-2VNAZ2X-TW4VXAP server=U4E2POZ-4ZFTMAP-AZOF3CB-KY6TE4V-MZNU2EV-XO6ROBM-2RWVFSD-TP42ZAZ
+
+[23:37:15] burst: one 2048 MB file, then 100 x 200 KB written while it is being copied to the HDD
+small files queued while big.bin was being copied: 100
+OK burst
+
+[23:37:46] resend: moved files must not come back after rescans, and the phone keeps them
+OK resend
+
+[23:38:03] edit: an edited file on the phone is kept as name_1, the original backup is untouched
+OK edit
+
+[23:38:08] st_restart: server Syncthing restarts; event IDs restart, files must still be moved
+{
+  "ping": "pong"
+}
+porter detected the restart
+OK st_restart
+
+[23:38:12] kill_copy: porter killed with SIGKILL during a large copy
+killed during copy; leftovers: 1 tmp, final exists: no
+OK kill_copy
+
+[23:38:34] offline: files arrive while the porter is down (no events seen) -> startup scan
+OK offline
+
+[23:38:39] witness: nothing is written while the witness file is missing
+OK witness
+
+[23:39:42] ALL E2E SCENARIOS PASSED: burst resend edit st_restart kill_copy offline witness
+      1 WARN syncthing_backup: Syncthing events: Invalid JSON from /rest/events?since=117&timeout=60&events=ItemFinished,ConfigSaved: request or response body error: error reading a body from connection: unexpected EOF during chunk size line: error reading a body from connection: unexpected EOF during chunk size line: unexpected EOF during chunk size line. Retrying in 1s
+      1 ERROR syncthing_backup: mount witness "/home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd/.mounted" is missing or on another filesystem, destination not mounted?. Pausing for 60s

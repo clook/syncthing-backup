@@ -1,0 +1,234 @@
+# tests/e2e/run.sh @ 19435b6, Syncthing v2.1.7, 2026-10-30
+
+[23:32:23] Setup in /tmp/claude-1000/-home-ocloirec-Work-clook-syncthing-backup/e178d914-e821-45c2-9404-2e3c79b13c75/scratchpad/e2e (source) and /home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd (destination); server folder type: sendreceive
+{
+  "ping": "pong"
+}
+{
+  "ping": "pong"
+}
+phone=3U5DXLR-XPN3HEW-TWWGK4V-DZRXBN6-S2T3EYD-THOAUDB-57RRCPE-6OSJVAI server=4ECMWSY-M7EZAQH-AMNAX5K-JXQF5GP-VYXMVEF-VDLEXGM-NSNJDHZ-DM4G6AX
+
+[23:32:26] edit: an edited file on the phone is kept as name_1, the original backup is untouched
+E2E FAIL: timeout (90 s): edit_1.jpg backed up
+--- diagnostics
+## 127.0.0.1:18384 db/status:
+{
+  "errors": 0,
+  "pullErrors": 0,
+  "invalid": "",
+  "globalFiles": 0,
+  "globalDirectories": 0,
+  "globalSymlinks": 0,
+  "globalDeleted": 1,
+  "globalBytes": 0,
+  "globalTotalItems": 1,
+  "localFiles": 1,
+  "localDirectories": 0,
+  "localSymlinks": 0,
+  "localDeleted": 0,
+  "localBytes": 12000,
+  "localTotalItems": 1,
+  "needFiles": 0,
+  "needDirectories": 0,
+  "needSymlinks": 0,
+  "needDeletes": 0,
+  "needBytes": 0,
+  "needTotalItems": 0,
+  "receiveOnlyChangedFiles": 0,
+  "receiveOnlyChangedDirectories": 0,
+  "receiveOnlyChangedSymlinks": 0,
+  "receiveOnlyChangedDeletes": 0,
+  "receiveOnlyChangedBytes": 0,
+  "receiveOnlyTotalItems": 0,
+  "inSyncFiles": 0,
+  "inSyncBytes": 0,
+  "state": "idle",
+  "stateChanged": "2026-10-30T23:33:57+01:00",
+  "error": "",
+  "version": 3,
+  "sequence": 3,
+  "remoteSequence": {
+    "4ECMWSY-M7EZAQH-AMNAX5K-JXQF5GP-VYXMVEF-VDLEXGM-NSNJDHZ-DM4G6AX": 3
+  },
+  "ignorePatterns": false,
+  "watchError": ""
+}
+
+## 127.0.0.1:18384 db/file edit.jpg:
+{
+  "availability": [
+    {
+      "id": "4ECMWSY-M7EZAQH-AMNAX5K-JXQF5GP-VYXMVEF-VDLEXGM-NSNJDHZ-DM4G6AX",
+      "fromTemporary": false
+    }
+  ],
+  "global": {
+    "blocksHash": null,
+    "deleted": true,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-30T23:32:29.15249155+01:00",
+    "modifiedBy": "4ECMWSY",
+    "mustRescan": false,
+    "name": "edit.jpg",
+    "noPermissions": false,
+    "numBlocks": 0,
+    "permissions": "0644",
+    "platform": {
+      "Unix": null,
+      "Windows": null,
+      "Linux": null,
+      "Darwin": null,
+      "FreeBSD": null,
+      "NetBSD": null
+    },
+    "previousBlocksHash": null,
+    "sequence": 3,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": [
+      "3U5DXLR:1793399547",
+      "4ECMWSY:1793399549"
+    ]
+  },
+  "local": {
+    "blocksHash": "IX4QhiuOiM+8vLmPW+ROETco80KhFUIybjrdPycLDMo=",
+    "deleted": false,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-30T23:32:28.685479648+01:00",
+    "modifiedBy": "3U5DXLR",
+    "mustRescan": false,
+    "name": "edit.jpg",
+    "noPermissions": false,
+    "numBlocks": 1,
+    "permissions": "0644",
+    "platform": {
+      "Unix": null,
+      "Windows": null,
+      "Linux": null,
+      "Darwin": null,
+      "FreeBSD": null,
+      "NetBSD": null
+    },
+    "previousBlocksHash": "XhFXkkVrVRNCrdqHno2gdt3Xfx9LUyo33xFv3n+FhEE=",
+    "sequence": 3,
+    "size": 12000,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": [
+      "3U5DXLR:1793399549"
+    ]
+  }
+}
+
+## 127.0.0.1:18385 db/status:
+{
+  "errors": 0,
+  "pullErrors": 0,
+  "invalid": "",
+  "globalFiles": 0,
+  "globalDirectories": 0,
+  "globalSymlinks": 0,
+  "globalDeleted": 1,
+  "globalBytes": 0,
+  "globalTotalItems": 1,
+  "localFiles": 0,
+  "localDirectories": 0,
+  "localSymlinks": 0,
+  "localDeleted": 1,
+  "localBytes": 0,
+  "localTotalItems": 1,
+  "needFiles": 0,
+  "needDirectories": 0,
+  "needSymlinks": 0,
+  "needDeletes": 0,
+  "needBytes": 0,
+  "needTotalItems": 0,
+  "receiveOnlyChangedFiles": 0,
+  "receiveOnlyChangedDirectories": 0,
+  "receiveOnlyChangedSymlinks": 0,
+  "receiveOnlyChangedDeletes": 0,
+  "receiveOnlyChangedBytes": 0,
+  "receiveOnlyTotalItems": 0,
+  "inSyncFiles": 0,
+  "inSyncBytes": 0,
+  "state": "idle",
+  "stateChanged": "2026-10-30T23:33:55+01:00",
+  "error": "",
+  "version": 3,
+  "sequence": 3,
+  "remoteSequence": {
+    "3U5DXLR-XPN3HEW-TWWGK4V-DZRXBN6-S2T3EYD-THOAUDB-57RRCPE-6OSJVAI": 3
+  },
+  "ignorePatterns": false,
+  "watchError": ""
+}
+
+## 127.0.0.1:18385 db/file edit.jpg:
+{
+  "availability": null,
+  "global": {
+    "blocksHash": null,
+    "deleted": true,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-30T23:32:29.15249155+01:00",
+    "modifiedBy": "4ECMWSY",
+    "mustRescan": false,
+    "name": "edit.jpg",
+    "noPermissions": false,
+    "numBlocks": 0,
+    "permissions": "0644",
+    "platform": {
+      "Unix": null,
+      "Windows": null,
+      "Linux": null,
+      "Darwin": null,
+      "FreeBSD": null,
+      "NetBSD": null
+    },
+    "previousBlocksHash": null,
+    "sequence": 3,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": [
+      "3U5DXLR:1793399547",
+      "4ECMWSY:1793399549"
+    ]
+  },
+  "local": {
+    "blocksHash": null,
+    "deleted": true,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-30T23:32:29.15249155+01:00",
+    "modifiedBy": "4ECMWSY",
+    "mustRescan": false,
+    "name": "edit.jpg",
+    "noPermissions": false,
+    "numBlocks": 0,
+    "permissions": "0644",
+    "platform": {
+      "Unix": null,
+      "Windows": null,
+      "Linux": null,
+      "Darwin": null,
+      "FreeBSD": null,
+      "NetBSD": null
+    },
+    "previousBlocksHash": null,
+    "sequence": 3,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": [
+      "3U5DXLR:1793399547",
+      "4ECMWSY:1793399549"
+    ]
+  }
+}
+

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Blocks a push unless the pushed code passes scripts/review.sh and is covered by a review record.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Bypass in an emergency: git push --no-verify
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+zero=0000000000000000000000000000000000000000
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [[ $local_sha == "$zero" ]] && continue   # branch deletion
+  "$root/scripts/check-reviewed.sh" "$local_sha"
+done
+
+# review.sh checks the working tree, so it must match what is pushed.
+if ! git diff --quiet HEAD -- || [[ -n $(git ls-files --others --exclude-standard -- src) ]]; then
+  echo "pre-push: working tree has uncommitted changes; commit or stash them first"; exit 1
+fi
+"$root/scripts/review.sh"

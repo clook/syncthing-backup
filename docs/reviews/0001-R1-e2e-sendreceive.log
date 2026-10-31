@@ -1,0 +1,56 @@
+# tests/e2e/run.sh @ 19435b6, Syncthing v2.1.7, 2026-10-30
+
+[23:29:54] Setup in /tmp/claude-1000/-home-ocloirec-Work-clook-syncthing-backup/e178d914-e821-45c2-9404-2e3c79b13c75/scratchpad/e2e (source) and /home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd (destination); server folder type: sendreceive
+{
+  "ping": "pong"
+}
+{
+  "ping": "pong"
+}
+phone=MF74JHG-HJE2RIR-RIEDUL3-T7VBLN3-TXP7YT3-AY7LD7P-YFTQKJE-VVBMIAM server=ZUVVXTA-L35H7GI-UI2DF77-GFZ2V6S-R3PZ6J3-W677FOK-NEW5EF4-NMSJBA2
+
+[23:29:57] burst: one 2048 MB file, then 100 x 200 KB written while it is being copied to the HDD
+small files queued while big.bin was being copied: 100
+OK burst
+
+[23:30:28] resend: moved files must not come back after rescans, and the phone keeps them
+OK resend
+
+[23:30:46] st_restart: server Syncthing restarts; event IDs restart, files must still be moved
+{
+  "ping": "pong"
+}
+porter detected the restart
+OK st_restart
+
+[23:30:48] kill_copy: porter killed with SIGKILL during a large copy
+killed during copy; leftovers: 1 tmp, final exists: no
+OK kill_copy
+
+[23:31:15] offline: files arrive while the porter is down (no events seen) -> startup scan
+OK offline
+
+[23:31:21] witness: nothing is written while the witness file is missing
+OK witness
+
+[23:32:23] ALL E2E SCENARIOS PASSED: burst resend st_restart kill_copy offline witness
+      1 WARN syncthing_backup: Syncthing events: Invalid JSON from /rest/events?since=115&timeout=60&events=ItemFinished,ConfigSaved: request or response body error: error reading a body from connection: unexpected EOF during chunk size line: error reading a body from connection: unexpected EOF during chunk size line: unexpected EOF during chunk size line. Retrying in 1s
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r9.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r8.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r7.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r6.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r5.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r4.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r3.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r2.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r20.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r1.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r19.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r18.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r17.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r16.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r15.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r14.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r13.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r12.bin" will be picked up by the next scan
+      1 WARN syncthing_backup: No folder mapping yet; "restart/r11.bin" will be picked up by the next scan
