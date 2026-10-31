@@ -10,6 +10,11 @@ ARG TARGETPLATFORM
 # Target C toolchain and libc, for crates with C code (ring, used by rustls).
 RUN xx-apk add --no-cache musl-dev gcc
 
+# rustc has no static-pie support for aarch64-unknown-linux-musl, so it links with `-static -no-pie`;
+# clang ignores `-no-pie` next to `-static` and warns. The binary is fine: silence that warning, for arm64
+# only. (xx-cargo keeps this variable unless XX_RUSTFLAGS is set.)
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=-Wno-unused-command-line-argument"
+
 WORKDIR /usr/src/app
 # Dependencies first, in their own layer: rebuilt only when Cargo.toml or Cargo.lock change.
 COPY Cargo.toml Cargo.lock ./
