@@ -1,6 +1,6 @@
 # 0003 — Replace rules for files rewritten in place
 
-Status: **in progress**, branch `feat/replace-patterns`
+Status: **done** (merged in PR #9)
 Decision: [0012](../decisions/0012-replace-patterns.md)
 
 ## Context
@@ -21,7 +21,7 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 - [x] **R5** e2e `replace` scenario.
 - [x] **R6** README and CLAUDE.md: invariant 1, env var, example.
 - [x] **R7** Review harness, review record 0004, PR (merge only with the user's approval).
-- [ ] **R8** Release 0.4.0 and GitOps change (each step with the user's approval).
+- [x] **R8** Release 0.4.0 and GitOps change (each step with the user's approval).
 
 ## Verification
 1. `cargo test` and `scripts/review.sh` pass.
@@ -41,3 +41,8 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
   fixed, 3 won't fix with reasons). review.sh passes (51 tests); e2e passes at e6b1dab. Next: PR, merge
   only with the user's approval.
 - 2026-10-31 — The user approved the merge ("Yes, go ahead"): 0012 accepted, version 0.4.0.
+- 2026-10-31 — R8: PR #9 merged (7178aa6); release v0.4.0 published by the user; images `0.4.0` and `0.4`
+  on Docker Hub (amd64, arm64). Deployed through k3s-cluster-gitops PR #28 (35db51e) with replace patterns
+  for one folder: the porter starts as 0.4.0, logs the patterns, no "outside every folder path" warning,
+  first scans clean (0 files, 0 errors). The first live replacement is **unverified** until the app
+  writes its next backup.
