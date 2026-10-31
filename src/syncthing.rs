@@ -175,6 +175,7 @@ mod tests {
             scan_interval: Duration::from_secs(1),
             verify_copy: true,
             min_age: Duration::from_secs(0),
+            replace: None,
         }
     }
 

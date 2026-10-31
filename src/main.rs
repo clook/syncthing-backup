@@ -188,6 +188,13 @@ async fn run_worker(shared: Arc<Shared>, mover: Mover) {
                         info!("Moved {:?} -> {:?}", job.src, to);
                         succeeded_since_drain += 1;
                     }
+                    Outcome::Replaced(to) => {
+                        info!(
+                            "Replaced {:?} -> {:?} (previous backup version discarded)",
+                            job.src, to
+                        );
+                        succeeded_since_drain += 1;
+                    }
                     Outcome::Duplicate(at) => {
                         info!(
                             "Identical copy already at {:?}; removed source {:?}",
@@ -198,6 +205,9 @@ async fn run_worker(shared: Arc<Shared>, mover: Mover) {
                     Outcome::Gone => debug!("{:?} already gone", job.src),
                     Outcome::WouldMove(to) => {
                         info!("[dry run] would move {:?} -> {:?}", job.src, to)
+                    }
+                    Outcome::WouldReplace(to) => {
+                        info!("[dry run] would replace {:?} with {:?}", to, job.src)
                     }
                     Outcome::WouldDeduplicate(at) => {
                         info!(
@@ -476,6 +486,12 @@ async fn run() -> Result<()> {
         ),
         Some(_) => {}
     }
+    if let Some(r) = &cfg.replace {
+        warn!(
+            "REPLACE_PATTERNS {:?}: newer versions of matching files replace their backup copy",
+            r.patterns
+        );
+    }
 
     let client = Arc::new(Client::new(&cfg)?);
     let shared = Arc::new(Shared::new(FolderMap::new()));
@@ -486,6 +502,7 @@ async fn run() -> Result<()> {
         verify: cfg.verify_copy,
         dry_run: cfg.dry_run,
         allow_link: true,
+        replace: cfg.replace.clone().map(Arc::new),
     };
     let mover: Mover = Arc::new(move |job: &Job| mover::move_file(job, &opts));
 
@@ -546,6 +563,7 @@ mod tests {
             scan_interval: Duration::from_secs(900),
             verify_copy: true,
             min_age: Duration::from_secs(30),
+            replace: None,
         }
     }
 

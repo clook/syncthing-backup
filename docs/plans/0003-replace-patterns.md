@@ -14,10 +14,10 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 
 ## Tasks
 - [x] **R1** This plan, branch, decision 0012.
-- [ ] **R2** `REPLACE_PATTERNS` (globs, `globset`) parsed in `src/config.rs`, with unit tests.
-- [ ] **R3** `src/mover.rs`: replace path (verified copy, atomic `rename` over the previous regular
+- [x] **R2** `REPLACE_PATTERNS` (globs, `globset`) parsed in `src/config.rs`, with unit tests.
+- [x] **R3** `src/mover.rs`: replace path (verified copy, atomic `rename` over the previous regular
       file), `Replaced` and `WouldReplace` outcomes, unit tests.
-- [ ] **R4** `src/main.rs`: matcher passed to the mover, new outcomes logged.
+- [x] **R4** `src/main.rs`: matcher passed to the mover, new outcomes logged.
 - [ ] **R5** e2e `replace` scenario.
 - [ ] **R6** README and CLAUDE.md: invariant 1, env var, example.
 - [ ] **R7** Review harness, review record 0004, PR (merge only with the user's approval).
@@ -30,3 +30,6 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 
 ## Progress log
 - 2026-10-31 — Plan approved. Design choices recorded in 0012 (proposed).
+- 2026-10-31 — R2–R4: `globset` 0.4.20 (2026-08-04; 0.4.21 is four days old, so not used). 46 unit tests
+  pass, 12 of them new (5 config, 7 mover). The forced verification on replace is visible only in the code
+  (`copy_durable(…, true, Place::Replace)`); no test can make a correct copy fail verification.
