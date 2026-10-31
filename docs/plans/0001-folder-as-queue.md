@@ -200,3 +200,5 @@ Run checks after each task (and record the result in the plan's progress log):
 - 2026-10-30 — Review record docs/reviews/0001-R1-T2-T8.md (rounds 1–6, Reviewed-Commit 6b5ea5b) with
   review.sh and e2e logs. T9 done: e2e Receive Only 7/7 at 139b163. Next: user approval of 0010, push,
   T10 (k3s dry run).
+- 2026-10-31 — The user approved 0010 ("1. OK") and the push ("OK for pushing"). Destination is NFS
+  ("The HDD is with NFS"): to check during T10 that hard links and the witness work on the export.

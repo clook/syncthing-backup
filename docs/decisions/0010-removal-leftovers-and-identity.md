@@ -1,9 +1,9 @@
 # 0010 — Removal leftovers are reported, never moved automatically; cleanup checks identity; copies verified before naming
-- Status: **proposed**, waiting for the user's approval (refines 0008 §2, §4 and §4b)
+- Status: **accepted** (refines 0008 §2, §4 and §4b)
 - Date: 2026-10-30
 - Type: technical, with one visible behaviour (leftovers need a human)
 - Decided by: proposed by Claude after the third review round, extended after the final review (round 4).
-  Not approved yet.
+  Approved by the user on 2026-10-31: "1. OK" (answer to "Approve decision 0010?").
 
 ## Context
 The third review (`docs/reviews/0001-R1-T2-T8.md`, round 3) found that the 0008 design could:
@@ -59,5 +59,7 @@ Leftovers are expected to be extremely rare: they need a crash, or two Syncthing
   `scanner::tests::scans_files_and_maps_destinations`;
   `scanner::tests::leftovers_are_reported_not_queued`.
 - Review findings and resolutions: `docs/reviews/0001-R1-T2-T8.md`, rounds 3 to 5.
-- Hard-link support per filesystem: **unverified** (general knowledge, not tested here). The user's HDD
-  filesystem is not recorded yet.
+- Hard-link support per filesystem: **unverified** (general knowledge, not tested here). The user's
+  destination is NFS ("The HDD is with NFS", 2026-10-31). NFS supports hard links when the exported
+  filesystem does; the e2e suite ran on btrfs, so the NFS path is **unverified** until the T10 dry run
+  and a first real move.
