@@ -906,8 +906,10 @@ mod tests {
         let path = env.dst.join("a.jpg");
         fs::write(&path, b"ours").unwrap();
         let ours = FileId::at(&path).unwrap();
-        // Same path, other file (e.g. another disk mounted meanwhile).
-        fs::remove_file(&path).unwrap();
+        // Same path, other file (e.g. another disk mounted meanwhile). The original stays alive
+        // under another name: deleting it would let the filesystem reuse its inode number for the
+        // new file (seen on ext4 in CI), which no longer models "someone else's file".
+        fs::rename(&path, env.dst.join("kept")).unwrap();
         fs::write(&path, b"someone else's backup").unwrap();
         remove_ours(&path, ours).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"someone else's backup");
