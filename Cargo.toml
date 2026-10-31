@@ -15,3 +15,9 @@ tracing-subscriber = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+# panic stays "unwind": the worker catches a panic in the mover (spawn_blocking) and keeps running.
