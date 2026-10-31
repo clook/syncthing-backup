@@ -202,3 +202,5 @@ Run checks after each task (and record the result in the plan's progress log):
   T10 (k3s dry run).
 - 2026-10-31 — The user approved 0010 ("1. OK") and the push ("OK for pushing"). Destination is NFS
   ("The HDD is with NFS"): to check during T10 that hard links and the witness work on the export.
+- 2026-10-31 — PR #6 merged. Its pull_request CI run failed on a flaky test (inode reuse on ext4); the push
+  runs passed. Test fixed on branch fix/flaky-remove-ours-test, review record docs/reviews/0002.
