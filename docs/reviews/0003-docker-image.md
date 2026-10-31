@@ -1,12 +1,12 @@
 # 0003 — Review of D1–D6 (Docker image and publish workflow)
 
-Reviewed-Commit: 07221d9
-Range: a2f594c..07221d9
+Reviewed-Commit: 2df17a2
+Range: a2f594c..2df17a2
 Plan: docs/plans/0002-docker-image.md
 Decisions applied: 0011
 
 ## Mechanical checks
-scripts/review.sh at 07221d9: passed (34 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
+scripts/review.sh at 2df17a2: passed (34 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
 installed, skipped). Full output: `0003-docker-image.log`.
 
 ## Code review
@@ -27,6 +27,13 @@ handling. No Docker build was run: the build of both platforms, including `ring`
 | 4 | low | .github/workflows/docker-publish.yml:66 | Fork PRs have a read-only cache token; a cache export error could fail the build (**unverified** for build-push v7) | fixed in 07221d9: `ignore-error=true` |
 
 The fixes in 07221d9 (about 15 lines) were reviewed inline by Claude, not by a second `/code-review` run.
+
+### Round 2 (PR #8 Docker check, run 41222208178)
+The build passed for both platforms in 4 min 19 s (16:58:16 to 17:02:35 UTC). That verifies the `ring`
+cross-compile and `xx-verify --static` for amd64 and arm64.
+| # | Severity | File:line | Finding | Resolution |
+|---|----------|-----------|---------|------------|
+| 5 | low (build noise) | Dockerfile:16 | arm64 only: `warning: linker stderr: clang: argument unused during compilation: '-no-pie'` (reported by the user). rustc 1.99.0 sets `static_position_independent_executables` for `x86_64-unknown-linux-musl` but not for `aarch64-unknown-linux-musl` (`compiler/rustc_target/src/spec/targets/*_linux_musl.rs` @ 1.99.0), so it links with `-static -no-pie` (`compiler/rustc_codegen_ssa/src/back/linker.rs:532-538` @ 1.99.0). clang ignores `-no-pie` next to `-static` | fixed in 2df17a2: `-Wno-unused-command-line-argument` passed to the linker, for the aarch64 musl target only. The binary does not change: it was already static non-PIE |
 
 ## Invariants
 1, 2, 4, 5: unaffected (no change under `src/`; the release profile only changes optimization and strips

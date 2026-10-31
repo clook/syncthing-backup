@@ -57,3 +57,8 @@ This record was amended on its branch before it was merged, after review 0003:
   which contradicts "`latest` on `main`" above (docker/metadata-action README @ v6.2.0, "Latest tag",
   retrieved 2026-10-31, per the review agent; **unverified** by Claude directly).
 - `cache-to` gets `ignore-error=true`, so a fork PR's read-only cache token cannot fail the build.
+- arm64 links with `-Wno-unused-command-line-argument`, to silence clang's `-no-pie` warning (review 0003
+  finding 5).
+- Evidence: the first build of this Dockerfile (PR #8, run 41222208178) built both platforms in **4 min 19 s**,
+  against 36 and 34 min for the old one (2026-02-16). The dependency layer took 81 s for amd64; the crate
+  itself 29 s per platform.

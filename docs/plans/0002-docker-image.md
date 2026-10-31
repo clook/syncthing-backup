@@ -43,3 +43,5 @@ Items 6 (scratch base image) and 11 (gate publishing on CI) are out of scope.
   daemon). Next: D7 review.
 - 2026-10-31 — D7: review 0003 (4 findings, all fixed in 07221d9; `ENTRYPOINT` back to `CMD`). review.sh
   passes. Next: PR and its Docker check (the multi-arch build is still **unverified**).
+- 2026-10-31 — PR #8: the Docker check passed in 4 min 19 s (was ~35 min). The user reported a `-no-pie`
+  linker warning on arm64; it is silenced in 2df17a2 (review 0003, round 2). Waiting for the user's merge decision.
