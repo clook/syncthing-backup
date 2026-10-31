@@ -1,12 +1,12 @@
 # 0004 — Review of R2–R6 (replace rules)
 
-Reviewed-Commit: 5a4e75f
-Range: 2df17a2..5a4e75f
+Reviewed-Commit: 83f159f
+Range: 2df17a2..83f159f
 Plan: docs/plans/0003-replace-patterns.md
-Decisions applied: 0012 (proposed; amended by the fixes below before acceptance)
+Decisions applied: 0012 (amended by the fixes below, then accepted when the user approved the merge)
 
 ## Mechanical checks
-scripts/review.sh at 5a4e75f: passed (51 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
+scripts/review.sh at 83f159f: passed (51 tests, fmt, clippy `-D warnings`, invariant greps; cargo audit not
 installed, skipped). Full output: `0004-replace-patterns.log`.
 
 ## End-to-end
@@ -29,6 +29,7 @@ including the new `replace`:
   identity. The test now moves the compared file aside. Limitation recorded: identity is device + inode,
   so a file deleted and recreated under the same inode number between the comparison and the rename is
   not detected. That needs another writer in the backup directory during a move (invariant 3).
+- 83f159f: version bump to 0.4.0 only (`Cargo.toml`, `Cargo.lock`).
 
 Severity: high = can lose or hide a backup; medium = can stall backups or break an invariant without
 loss; low = efficiency, docs, or a narrow edge case.

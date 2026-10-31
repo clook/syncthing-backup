@@ -40,3 +40,4 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 - 2026-10-31 — R7: review 0004, two rounds (20 findings: 16 fixed in c7d8088 and e6b1dab, 1 partly
   fixed, 3 won't fix with reasons). review.sh passes (51 tests); e2e passes at e6b1dab. Next: PR, merge
   only with the user's approval.
+- 2026-10-31 — The user approved the merge ("Yes, go ahead"): 0012 accepted, version 0.4.0.
