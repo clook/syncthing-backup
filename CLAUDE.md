@@ -9,7 +9,8 @@ This is the user's backup path: **correctness beats features and speed.**
 
 ## Safety invariants (every change must preserve them)
 1. Never overwrite or modify an existing destination file. Conflicts get a `_N` suffix; identical content is
-   deduplicated (source deleted, nothing written).
+   deduplicated (source deleted, nothing written). Only exception: paths matching `REPLACE_PATTERNS`, where a
+   verified, fsynced newer version atomically replaces the previous regular file (decision 0012).
 2. Delete the source only after the destination is fsynced (and verified when `VERIFY_COPY=true`).
 3. A single sequential worker does all HDD I/O. The event poller never touches the disk.
 4. No external state: the source folder *is* the queue; a scan must always be able to rebuild it.

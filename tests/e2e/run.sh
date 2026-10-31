@@ -16,7 +16,7 @@ HDD=$ROOT/target/e2e/hdd
 BIG_MB=${E2E_BIG_MB:-2048}
 SERVER_TYPE=${E2E_SERVER_TYPE:-receiveonly}   # sendreceive: `edit` is expected to fail (decision 0009)
 SCENARIOS=("$@")
-((${#SCENARIOS[@]})) || SCENARIOS=(burst resend edit st_restart kill_copy offline witness)
+((${#SCENARIOS[@]})) || SCENARIOS=(burst resend edit replace st_restart kill_copy offline witness)
 
 PHONE=$SRC_ROOT/phone            # phone's folder
 STORE=$SRC_ROOT/server-storage   # server Syncthing storage root
@@ -70,7 +70,7 @@ PORTER_PID=
 start_porter() {
   DRY_RUN=false SYNCTHING_URL="http://$S_GUI" SYNCTHING_KEY=$KEY \
     SOURCE_DIRECTORY="$STORE" SYNCTHING_STORAGE_DIRECTORY="$STORE" DESTINATION_DIRECTORY="$HDD" \
-    WITNESS_FILE=.mounted SCAN_INTERVAL_SECS=600 MIN_AGE_SECS=2 \
+    WITNESS_FILE=.mounted SCAN_INTERVAL_SECS=600 MIN_AGE_SECS=2 REPLACE_PATTERNS='phone/photos/replace/**' \
     "$ROOT/target/release/syncthing-backup" >>"$LOG/porter.log" 2>&1 &
   PORTER_PID=$!
   PIDS+=($PORTER_PID)
@@ -161,6 +161,22 @@ scenario_edit() {
   [[ $(sha256sum "$HDD/phone/photos/edit.jpg" | cut -d' ' -f1) == "$orig" ]] || fail "original overwritten"
   cmp -s "$PHONE/edit.jpg" "$HDD/phone/photos/edit_1.jpg" || fail "edit_1.jpg differs from phone"
   echo "OK edit"
+}
+
+scenario_replace() {
+  log "replace: a rewritten file under REPLACE_PATTERNS replaces its backup copy, no name_1"
+  mkdir -p "$PHONE/replace"
+  mkfile "$PHONE/replace/db.bin" 10000
+  wait_until 60 "replace/db.bin backed up" test -f "$HDD/phone/photos/replace/db.bin"
+  wait_until 30 "source empty" src_empty
+  DIAG_FILE=replace/db.bin
+  mkfile "$PHONE/replace/db.bin" 12000
+  wait_until 90 "replace/db.bin replaced" cmp -s "$PHONE/replace/db.bin" "$HDD/phone/photos/replace/db.bin"
+  wait_until 30 "source empty" src_empty
+  [[ ! -e "$HDD/phone/photos/replace/db_1.bin" ]] || fail "db_1.bin created"
+  [[ $(find "$HDD/phone/photos/replace" -type f | wc -l) -eq 1 ]] || fail "extra files in replace/"
+  grep -q 'Replaced ".*replace/db.bin"' "$LOG/porter.log" || fail "no Replaced log line"
+  echo "OK replace"
 }
 
 scenario_st_restart() {

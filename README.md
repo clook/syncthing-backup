@@ -41,9 +41,10 @@ is then never transferred again, because Syncthing keeps the server's deletion a
 the phone folders when the server shares other folders.
 
 ## Safety guarantees
-1. **Nothing in the backup is ever overwritten.** If `photo.jpg` already exists with different content,
-   the new file is saved as `photo_1.jpg` (then `_2`, …). If identical content is already there, the source
-   is simply removed.
+1. **Nothing in the backup is ever overwritten**, except paths you list in `REPLACE_PATTERNS` (see
+   [Replace rules](#replace-rules)). If `photo.jpg` already exists with different content, the new file is
+   saved as `photo_1.jpg` (then `_2`, …). If identical content is already there, the source is simply
+   removed.
 2. **The source is removed only after the copy is safe.** The file is copied under a temporary name and
    fsynced, compared byte for byte with the source (`VERIFY_COPY`), then given its final name (an atomic
    operation that never replaces an existing file). Only then is the source removed, and only if it is
@@ -80,7 +81,31 @@ checksumming filesystem or regular `restic check` runs.
 | `SCAN_INTERVAL_SECS` | `900` | Periodic full scan (minimum 10) |
 | `MIN_AGE_SECS` | `30` | Scans skip files changed more recently than this |
 | `VERIFY_COPY` | `true` | Compare destination with source before removing the source |
+| `REPLACE_PATTERNS` | *(none)* | Comma-separated globs of paths whose backup copy a newer version replaces, see [Replace rules](#replace-rules) |
 | `DRY_RUN` | `false` | Log what would happen; write or remove nothing |
+
+### Replace rules
+Some apps rewrite their own backup file under the same name every day, for example `Backups/app.db`.
+By default each new version is kept as `app_1.db`, `app_2.db`, … and these copies pile up. For paths
+matching `REPLACE_PATTERNS`, a newer version **replaces** the backup copy instead
+([decision 0012](docs/decisions/0012-replace-patterns.md)):
+
+```
+REPLACE_PATTERNS=phone/Apps/Backups/**,phone/Documents/**/*.db
+```
+
+- Patterns match the path relative to `DESTINATION_DIRECTORY`, which **includes the Syncthing folder's
+  own path** (`phone/Apps/…` above). The porter logs the patterns at startup; check a first replacement
+  with `DRY_RUN=true` (`would replace …`).
+- `*` stays within one directory, `**` crosses directories. Invalid or absolute patterns stop the startup.
+- The new version is always verified (even with `VERIFY_COPY=false`) and fsynced before it atomically takes
+  the place of the previous copy, so the path always holds one complete version. The source is then removed
+  as usual.
+- **The previous version is gone** once replaced. Keep the patterns narrow: a broad rule such as `**`
+  turns the backup into a mirror for those paths.
+- Only regular files are replaced. Copies made before the rule existed (`app_1.db`, …) are left alone;
+  remove them by hand. Files whose name changes with each version (for example `backup-2026-10-31.db`)
+  never collide, so they still accumulate.
 
 ### Migrating from 0.2.x
 - Redis is no longer used. Remove it, along with `REDIS_HOST`.

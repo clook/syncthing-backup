@@ -18,8 +18,8 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 - [x] **R3** `src/mover.rs`: replace path (verified copy, atomic `rename` over the previous regular
       file), `Replaced` and `WouldReplace` outcomes, unit tests.
 - [x] **R4** `src/main.rs`: matcher passed to the mover, new outcomes logged.
-- [ ] **R5** e2e `replace` scenario.
-- [ ] **R6** README and CLAUDE.md: invariant 1, env var, example.
+- [x] **R5** e2e `replace` scenario.
+- [x] **R6** README and CLAUDE.md: invariant 1, env var, example.
 - [ ] **R7** Review harness, review record 0004, PR (merge only with the user's approval).
 - [ ] **R8** Release 0.4.0 and GitOps change (each step with the user's approval).
 
@@ -33,3 +33,7 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 - 2026-10-31 — R2–R4: `globset` 0.4.20 (2026-08-04; 0.4.21 is four days old, so not used). 46 unit tests
   pass, 12 of them new (5 config, 7 mover). The forced verification on replace is visible only in the code
   (`copy_durable(…, true, Place::Replace)`); no test can make a correct copy fail verification.
+- 2026-10-31 — R5–R6: e2e `replace` scenario added. The first run used `replace/**`, which never matched,
+  because patterns include the Syncthing folder's path (`phone/photos/replace/**`); the README now says so.
+  The full suite (8 scenarios) passes against Syncthing v2.1.7. Earlier runs failed in `burst` only because
+  `/tmp` (tmpfs) was short of space for the 2 GB file. README and CLAUDE.md updated (invariant 1).
