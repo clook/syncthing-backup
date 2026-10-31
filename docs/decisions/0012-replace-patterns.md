@@ -1,5 +1,5 @@
 # 0012 — Replace rules: newer versions of matching paths replace the backup copy
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-31
 - Type: product
 - Decided by: user. Asked what files matching a rule should do, they chose "Replace latest on NAS" ("A
