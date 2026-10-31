@@ -41,3 +41,5 @@ Items 6 (scratch base image) and 11 (gate publishing on CI) are out of scope.
 - 2026-10-31 — D1–D6 written. Release binary 11.4 MB → 4.0 MB (host build). QEMU removed from the workflow:
   the runtime stage has no RUN step. The image itself is verified by the PR's Docker build (no local
   daemon). Next: D7 review.
+- 2026-10-31 — D7: review 0003 (4 findings, all fixed in 07221d9; `ENTRYPOINT` back to `CMD`). review.sh
+  passes. Next: PR and its Docker check (the multi-arch build is still **unverified**).
