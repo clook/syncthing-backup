@@ -31,15 +31,23 @@ grows with copies nobody restores.
   `VERIFY_COPY=false`, since the previous good copy is about to be discarded), then `rename(2)` of the
   temporary file over the previous copy, then the usual directory fsync, identity, mount and source
   removal steps (0006, 0008, 0010).
+- Added after review 0004, before acceptance. The rename happens only if:
+  - the source's size and mtime are unchanged since the move started (a file written to during the copy
+    may have been read half-updated);
+  - the backup copy is still the file whose content was compared (same device and inode). Otherwise the
+    move fails and the source is retried later; it never retries onto a possibly unmounted destination.
+- If the mount check fails after the rename, the new copy is kept (the previous one is already gone); the
+  source stays and is deduplicated on the next pass.
 - Invariant 1 becomes: never overwrite or modify an existing destination file, except paths matching
   `REPLACE_PATTERNS`, where a verified, fsynced newer version atomically replaces the previous one.
 - Nothing is cleaned up retroactively: existing `_N` copies stay.
 
 ## Evidence
-- `rename(2)` replaces atomically. man-pages 6.18 (`man 2 rename`, Arch package man-pages 6.18-1,
-  read 2026-10-31): "If newpath already exists, it will be atomically replaced, so that there is no point
-  at which another process attempting to access newpath will find it missing." So at every moment the path
-  holds either the complete previous copy or the complete new one.
+- `rename(2)` replaces atomically on local filesystems. man-pages 6.18 (`man 2 rename`, Arch package
+  man-pages 6.18-1, read 2026-10-31): "If newpath already exists, it will be atomically replaced, so that
+  there is no point at which another process attempting to access newpath will find it missing." That
+  this also holds on the live NFS destination, across a crash or a retransmitted request, is
+  **unverified**.
 - `RENAME_EXCHANGE` (swap, then inspect what was replaced) is not used: the same page lists the
   filesystems that support the rename flags, and NFS is not among them. The live destination is an NFS
   share (k3s-cluster-gitops `apps/syncthing-backup/deployment.yaml`). That NFS rejects these flags is
@@ -49,7 +57,16 @@ grows with copies nobody restores.
   existing comment at src/mover.rs:110 @ 687d043.
 - Old copies piling up were seen on the live system on 2026-10-31: the first live run created several
   `name_1.ext` copies of files rewritten daily by an app.
-- Tests: added with R3 and R5 (named in the review record 0004).
+- Unit tests: `mover::tests::replace_rewrites_matching_target` (both link and copy settings; another hard
+  link of the previous copy keeps its content), `replace_identical_is_duplicate` (also the "next pass after
+  a crash" case: the target already holds the new content), `replace_missing_target_moves`,
+  `replace_never_touches_a_non_regular_target`, `non_matching_path_keeps_both`,
+  `replace_dry_run_changes_nothing`, `replace_cleans_stale_temporary_file`,
+  `replace_refuses_a_changed_target`, `replace_refuses_a_source_changed_during_copy`;
+  `config::tests::replace_patterns_*` (5 tests) and `replace_star_stays_in_one_directory`.
+- End-to-end: `tests/e2e/run.sh` scenario `replace` (log `docs/reviews/0004-e2e.log`).
+- Not tested: a failed mount check after the rename (no test hook to remove the witness mid-move); the
+  forced verification (a correct copy cannot be made to fail it).
 
 ## Consequences
 - For matching paths, the backup keeps only the newest version: an older version is gone once replaced.
@@ -59,3 +76,9 @@ grows with copies nobody restores.
   accumulate. Out of scope (the user chose not to add pruning).
 - A crash after the rename but before the source is removed leaves the new version in the backup and the
   source in place; the next pass sees identical content and removes the source.
+- Narrow case (review 0004, finding 4): when a newer version arrives during a move, the porter puts it back
+  under a free suffixed name such as `app_1.db` and backs it up under that name. If the rule matches and a
+  pre-rule `app_1.db` already exists in the backup, it is replaced. Both are older versions of the same
+  matched file, which this decision discards anyway.
+- A replace reads more data than a normal move (comparison with the previous copy, copy, verification):
+  about five full passes for a same-size file. Accepted: correctness over speed.

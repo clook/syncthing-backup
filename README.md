@@ -47,7 +47,8 @@ the phone folders when the server shares other folders.
    removed.
 2. **The source is removed only after the copy is safe.** The file is copied under a temporary name and
    fsynced, compared byte for byte with the source (`VERIFY_COPY`), then given its final name (an atomic
-   operation that never replaces an existing file). Only then is the source removed, and only if it is
+   operation that never replaces an existing file, except under `REPLACE_PATTERNS`, where it atomically
+   replaces the previous copy). Only then is the source removed, and only if it is
    still the same file that was copied.
 3. **Destination not mounted, nothing written.** If `WITNESS_FILE` is missing, the porter pauses and logs
    an error.
@@ -97,10 +98,13 @@ REPLACE_PATTERNS=phone/Apps/Backups/**,phone/Documents/**/*.db
 - Patterns match the path relative to `DESTINATION_DIRECTORY`, which **includes the Syncthing folder's
   own path** (`phone/Apps/…` above). The porter logs the patterns at startup; check a first replacement
   with `DRY_RUN=true` (`would replace …`).
-- `*` stays within one directory, `**` crosses directories. Invalid or absolute patterns stop the startup.
+- `*` stays within one directory, `**` crosses directories, and `{db,bak}` alternatives are allowed.
+  Invalid patterns, and forms that can never match (absolute, `.`, `..`, trailing `/`), stop the startup.
+  A pattern outside every Syncthing folder path is reported with a warning.
 - The new version is always verified (even with `VERIFY_COPY=false`) and fsynced before it atomically takes
-  the place of the previous copy, so the path always holds one complete version. The source is then removed
-  as usual.
+  the place of the previous copy, so the path always holds one complete version. Nothing is replaced if the
+  source changed during the copy, or if the backup copy is no longer the file that was compared (e.g. the
+  destination was remounted): the source stays and is retried. The source is then removed as usual.
 - **The previous version is gone** once replaced. Keep the patterns narrow: a broad rule such as `**`
   turns the backup into a mirror for those paths.
 - Only regular files are replaced. Copies made before the rule existed (`app_1.db`, …) are left alone;

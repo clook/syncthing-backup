@@ -412,6 +412,14 @@ async fn run_scans(client: Arc<Client>, cfg: Arc<AppConfig>, shared: Arc<Shared>
                 shared.set_roots(roots.clone());
                 if map != shared.folders() {
                     info!("Folder mapping: {:?}", map);
+                    if let Some(r) = &cfg.replace {
+                        for p in r.outside_folders(map.values().map(PathBuf::as_path)) {
+                            warn!(
+                                "REPLACE_PATTERNS {:?} is outside every folder path and never matches (patterns start with the folder's path)",
+                                p
+                            );
+                        }
+                    }
                     shared.set_folders(map);
                 }
             }

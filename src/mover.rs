@@ -83,8 +83,9 @@ pub struct MoveOptions {
 enum Target {
     Free(PathBuf),
     Identical(PathBuf),
-    /// A different regular file to be replaced (only for `MoveOptions::replace` paths).
-    Replace(PathBuf),
+    /// A different regular file to be replaced (only for `MoveOptions::replace` paths), with the
+    /// identity of the file that was compared: only that file is ever replaced.
+    Replace(PathBuf, FileId),
 }
 
 /// How `copy_durable` gives the verified temporary file its final name.
@@ -92,8 +93,8 @@ enum Target {
 enum Place {
     /// Hard link: fails if the name exists, so nothing is ever replaced.
     NoReplace,
-    /// `rename` over the existing regular file (decision 0012).
-    Replace,
+    /// `rename` over the existing regular file, only if it is still this one (decision 0012).
+    Replace(FileId),
 }
 
 /// Moves `job.src` into the backup without ever overwriting an existing destination file, except
@@ -133,7 +134,11 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
 
     // A concurrent writer is impossible (single worker), but link() still reports EEXIST
     // atomically, so re-resolve instead of ever replacing a file.
-    for _ in 0..3 {
+    for attempt in 0..3 {
+        if attempt > 0 {
+            // A vanished name may mean an unmount: never retry onto the mountpoint.
+            check_witness(opts)?;
+        }
         let resolved = if replace {
             resolve_replace(&mut src_file, &job.dst)?
         } else {
@@ -152,23 +157,22 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
                 return Ok(Outcome::Duplicate(existing));
             }
             Target::Free(target) => (target, Place::NoReplace),
-            Target::Replace(target) => (target, Place::Replace),
+            Target::Replace(target, old) => (target, Place::Replace(old)),
         };
         if opts.dry_run {
             return Ok(match place {
                 Place::NoReplace => Outcome::WouldMove(target),
-                Place::Replace => Outcome::WouldReplace(target),
+                Place::Replace(_) => Outcome::WouldReplace(target),
             });
         }
 
         let parent = parent_of(&target)?;
         let created = create_dirs(parent)?;
 
-        let same_device = fs::metadata(parent)?.dev() == src_meta.dev();
-        let written = if place == Place::Replace {
+        let written = if let Place::Replace(_) = place {
             // Always a verified copy: the previous good copy is discarded by the rename.
-            copy_durable(&mut src_file, &src_meta, &target, true, Place::Replace)?
-        } else if opts.allow_link && same_device {
+            copy_durable(&mut src_file, &src_meta, &target, true, place)?
+        } else if opts.allow_link && fs::metadata(parent)?.dev() == src_meta.dev() {
             match link_no_replace(&job.src, &target) {
                 Ok(true) => {
                     ensure_linked_same_inode(&target, &src_meta)?;
@@ -209,7 +213,11 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
             );
         }
         if let Err(e) = confirm_mount(opts, root_dev) {
-            remove_ours(&target, written)?;
+            // A replace already discarded the previous copy: the new one (verified, fsynced, in
+            // place of a file that was on the backup) is then the only copy and stays.
+            if place == Place::NoReplace {
+                remove_ours(&target, written)?;
+            }
             return Err(e);
         }
 
@@ -218,8 +226,14 @@ pub fn move_file(job: &Job, opts: &MoveOptions) -> Result<Outcome> {
         remove_source(&job.src, &src_meta)?;
         return Ok(match place {
             Place::NoReplace => Outcome::Moved(target),
-            Place::Replace => Outcome::Replaced(target),
+            Place::Replace(_) => Outcome::Replaced(target),
         });
+    }
+    if replace {
+        bail!(
+            "{:?}: the destination kept changing during the move",
+            job.src
+        )
     }
     bail!("could not find a free destination name for {:?}", job.src)
 }
@@ -376,7 +390,7 @@ fn resolve_replace(src: &mut File, dst: &Path) -> Result<Target> {
         Ok(m) if m.file_type().is_file() => Ok(if same_content(src, dst)? {
             Target::Identical(dst.to_path_buf())
         } else {
-            Target::Replace(dst.to_path_buf())
+            Target::Replace(dst.to_path_buf(), FileId::of(&m))
         }),
         Ok(_) => {
             warn!(
@@ -435,8 +449,8 @@ fn ensure_linked_same_inode(target: &Path, src_meta: &fs::Metadata) -> Result<()
 
 /// Copies through the reserved temporary file, fsynced (and verified when `verify`) before it gets
 /// its final name, so a bad copy never takes a backup name, even if the process dies right after.
-/// Returns the identity of the new file, or `None` if `target` already exists (`Place::NoReplace`)
-/// or is no longer a regular file (`Place::Replace`).
+/// Returns the identity of the new file, or `None` if `target` already exists (`Place::NoReplace`).
+/// `Place::Replace` fails instead when the source or the file to replace changed meanwhile.
 fn copy_durable(
     src: &mut File,
     src_meta: &fs::Metadata,
@@ -482,19 +496,29 @@ fn copy_durable(
                     tmp, target
                 )
             })?,
-            // rename(2) replaces atomically: the path always holds the complete previous copy or
-            // the complete, fsynced and verified new one. Only the single worker writes here, so
-            // the target is still the regular file checked just before (decision 0012).
-            Place::Replace => match fs::symlink_metadata(target) {
-                Ok(m) if m.file_type().is_file() => {
-                    fs::rename(&tmp, target)
-                        .with_context(|| format!("rename {:?} -> {:?}", tmp, target))?;
-                    true
+            Place::Replace(old) => {
+                // The previous copy is discarded only for a stable source: a file written to
+                // during the copy may have been read half-updated.
+                let now = src.metadata()?;
+                if now.len() != src_meta.len()
+                    || (now.mtime(), now.mtime_nsec()) != (src_meta.mtime(), src_meta.mtime_nsec())
+                {
+                    bail!("source changed during the copy; previous backup kept");
                 }
-                Ok(_) => false,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-                Err(e) => return Err(e).with_context(|| format!("stat {:?}", target)),
-            },
+                // Only the file that was compared is replaced. Anything else there (unmount,
+                // another tool) is an error, never a retry onto a possibly empty mountpoint.
+                if FileId::at(target) != Some(old) {
+                    bail!(
+                        "{:?} changed since it was compared (destination remounted?); previous backup kept",
+                        target
+                    );
+                }
+                // rename(2) replaces atomically (decision 0012; on NFS **unverified**): the path
+                // holds the complete previous copy or the complete, fsynced, verified new one.
+                fs::rename(&tmp, target)
+                    .with_context(|| format!("rename {:?} -> {:?}", tmp, target))?;
+                true
+            }
         };
         Ok(placed.then_some(id))
     })();
@@ -1067,6 +1091,46 @@ mod tests {
         assert_eq!(move_file(&j, &o).unwrap(), Outcome::Replaced(j.dst.clone()));
         assert_eq!(fs::read(&j.dst).unwrap(), b"version 2");
         assert!(!env.dst.join("Backups").join(TMP_NAME).exists());
+    }
+
+    #[test]
+    fn replace_refuses_a_changed_target() {
+        let env = env();
+        let old = backed_up(&env, "Backups/app.db", b"version 1");
+        let compared = FileId::at(&old).unwrap();
+        // Another file took the name since it was compared (e.g. remount, external tool).
+        fs::remove_file(&old).unwrap();
+        fs::write(&old, b"someone else").unwrap();
+        let j = job(&env, "Backups/app.db", b"version 2");
+        let mut f = File::open(&j.src).unwrap();
+        let meta = f.metadata().unwrap();
+        let err = copy_durable(&mut f, &meta, &old, true, Place::Replace(compared)).unwrap_err();
+        assert!(
+            err.to_string().contains("changed since it was compared"),
+            "{err}"
+        );
+        assert_eq!(fs::read(&old).unwrap(), b"someone else");
+        assert!(!env.dst.join("Backups").join(TMP_NAME).exists());
+    }
+
+    #[test]
+    fn replace_refuses_a_source_changed_during_copy() {
+        let env = env();
+        let old = backed_up(&env, "Backups/app.db", b"version 1");
+        let j = job(&env, "Backups/app.db", b"version 2");
+        let mut f = File::open(&j.src).unwrap();
+        let meta = f.metadata().unwrap();
+        // Written in place after the move started.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&j.src)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(10))
+            .unwrap();
+        let id = FileId::at(&old).unwrap();
+        let err = copy_durable(&mut f, &meta, &old, true, Place::Replace(id)).unwrap_err();
+        assert!(err.to_string().contains("source changed"), "{err}");
+        assert_eq!(fs::read(&old).unwrap(), b"version 1");
     }
 
     #[test]
