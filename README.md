@@ -91,11 +91,26 @@ checksumming filesystem or regular `restic check` runs.
 
 ## Deployment
 
+Images, for `linux/amd64` and `linux/arm64`:
+- `latest`: the head of `main`.
+- `X.Y.Z`: the version in `Cargo.toml`. Every push to `main` rebuilds it until the version is bumped, so
+  it can change; a `vX.Y.Z` git tag publishes it again from that tag.
+- `X.Y`: the newest `vX.Y.*` git tag.
+
+To pin an image that never changes, use its digest (`clook/syncthing-backup@sha256:…`).
+
+**Run the porter with Syncthing's uid and gid.** It deletes the files Syncthing received, so it needs the
+same permissions on them, and the files it writes on the destination should belong to that user too. On
+NFS with root squash, a container running as root is mapped to `nobody` and cannot write. The image sets no
+user; set it in Compose (`user:`) or Kubernetes (`securityContext`), as below. Find the ids with
+`id <syncthing user>` on the host, or `stat -c '%u:%g' <a received file>`.
+
 ### Docker Compose
 ```yaml
 services:
   backup-porter:
     image: clook/syncthing-backup:0.3.0
+    user: "1000:1000"       # Syncthing's uid:gid
     environment:
       - SYNCTHING_URL=http://syncthing:8384
       - SYNCTHING_KEY=YOUR_API_KEY
@@ -127,6 +142,9 @@ spec:
       labels: { app: syncthing-backup }
     spec:
       terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsUser: 1000         # Syncthing's uid
+        runAsGroup: 1000        # Syncthing's gid
       containers:
         - name: porter
           image: clook/syncthing-backup:0.3.0

@@ -1,0 +1,5 @@
+# Only what the build needs reaches Docker (target/ alone can hold several GB of e2e data).
+*
+!Cargo.toml
+!Cargo.lock
+!src/

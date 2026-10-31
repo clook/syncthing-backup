@@ -40,3 +40,4 @@ after they are accepted. A later decision **supersedes** an earlier one, and bot
 | 0008 | Mover hardening after review R1 | technical | accepted |
 | 0009 | Server folder type: Receive Only instead of Send & Receive | product | accepted |
 | 0010 | Removal leftovers are reported, never moved automatically; cleanup checks identity; copies verified before naming | technical | accepted |
+| 0011 | Docker image: cross-compiled build, smaller image, leaner publish workflow | technical | accepted |
