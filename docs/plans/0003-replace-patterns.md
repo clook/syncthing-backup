@@ -20,7 +20,7 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
 - [x] **R4** `src/main.rs`: matcher passed to the mover, new outcomes logged.
 - [x] **R5** e2e `replace` scenario.
 - [x] **R6** README and CLAUDE.md: invariant 1, env var, example.
-- [ ] **R7** Review harness, review record 0004, PR (merge only with the user's approval).
+- [x] **R7** Review harness, review record 0004, PR (merge only with the user's approval).
 - [ ] **R8** Release 0.4.0 and GitOps change (each step with the user's approval).
 
 ## Verification
@@ -37,3 +37,6 @@ adding `_N`. Copies already in the backup are left alone; the user removes them 
   because patterns include the Syncthing folder's path (`phone/photos/replace/**`); the README now says so.
   The full suite (8 scenarios) passes against Syncthing v2.1.7. Earlier runs failed in `burst` only because
   `/tmp` (tmpfs) was short of space for the 2 GB file. README and CLAUDE.md updated (invariant 1).
+- 2026-10-31 — R7: review 0004, two rounds (20 findings: 16 fixed in c7d8088 and e6b1dab, 1 partly
+  fixed, 3 won't fix with reasons). review.sh passes (51 tests); e2e passes at e6b1dab. Next: PR, merge
+  only with the user's approval.

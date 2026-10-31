@@ -1,0 +1,44 @@
+
+[21:36:41] Setup in /tmp/porter-e2e (source) and /home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd (destination); server folder type: receiveonly
+{
+  "ping": "pong"
+}
+{
+  "ping": "pong"
+}
+phone=I5JQ3R6-U3AH3W7-WBFJ2JU-5GZJT4R-U52HE5C-IL3SOO2-DXRQG4B-WIDBGQE server=NB4WXVY-ZCHGVHT-C7I6UBQ-MFKEWIK-IYK5SVK-JU6G5BW-EDJDJEG-5HZJOQG
+
+[21:37:03] burst: one 2048 MB file, then 100 x 200 KB written while it is being copied to the HDD
+small files queued while big.bin was being copied: 100
+OK burst
+
+[21:37:43] resend: moved files must not come back after rescans, and the phone keeps them
+OK resend
+
+[21:38:00] edit: an edited file on the phone is kept as name_1, the original backup is untouched
+OK edit
+
+[21:38:05] replace: a rewritten file under REPLACE_PATTERNS replaces its backup copy, no name_1
+OK replace
+
+[21:38:10] st_restart: server Syncthing restarts; event IDs restart, files must still be moved
+{
+  "ping": "pong"
+}
+porter detected the restart
+OK st_restart
+
+[21:38:13] kill_copy: porter killed with SIGKILL during a large copy
+killed during copy; leftovers: 1 tmp, final exists: no
+OK kill_copy
+
+[21:38:45] offline: files arrive while the porter is down (no events seen) -> startup scan
+OK offline
+
+[21:38:51] witness: nothing is written while the witness file is missing
+OK witness
+
+[21:39:54] ALL E2E SCENARIOS PASSED: burst resend edit replace st_restart kill_copy offline witness
+      4 WARN syncthing_backup: REPLACE_PATTERNS ["phone/photos/replace/**"]: newer versions of matching files replace their backup copy
+      1 WARN syncthing_backup: Syncthing events: Invalid JSON from /rest/events?since=120&timeout=60&events=ItemFinished,ConfigSaved: request or response body error: error reading a body from connection: unexpected EOF during chunk size line: error reading a body from connection: unexpected EOF during chunk size line: unexpected EOF during chunk size line. Retrying in 1s
+      1 ERROR syncthing_backup: mount witness "/home/ocloirec/Work/clook/syncthing-backup/target/e2e/hdd/.mounted" is missing or on another filesystem, destination not mounted?. Pausing for 60s
