@@ -20,7 +20,7 @@ Items 6 (scratch base image) and 11 (gate publishing on CI) are out of scope.
 - [x] **D3** `Cargo.toml` release profile: `strip`, thin LTO, one codegen unit (keep `panic = "unwind"`:
       the worker catches a mover panic).
 - [x] **D4** `Dockerfile`: build stage on `$BUILDPLATFORM`, cross-compile with `tonistiigi/xx`; drop
-      `ca-certificates`; `ENTRYPOINT` with an absolute path; builder `rust:1.99.0-alpine3.24`.
+      `ca-certificates`; `CMD` with an absolute path (was `ENTRYPOINT`, changed after review 0003); builder `rust:1.99.0-alpine3.24`.
 - [x] **D5** Publish workflow: no builder image push, no QEMU, `concurrency`, current action majors,
       `metadata-action` tags and labels, PR builds without push.
 - [x] **D6** README: run with Syncthing's uid/gid (Compose `user:`, K3s `securityContext`), image tags.

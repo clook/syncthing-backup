@@ -24,4 +24,6 @@ FROM alpine:3.24
 # No ca-certificates: rustls ships its own roots, and Syncthing is reached over plain HTTP.
 # No USER: run with Syncthing's uid/gid (see README), so received files can be removed.
 COPY --from=builder /syncthing-backup /app/syncthing-backup
-ENTRYPOINT ["/app/syncthing-backup"]
+# CMD, not ENTRYPOINT: `docker run <image> sh` must open a shell, not start a second porter
+# (two workers would break the single-worker invariant).
+CMD ["/app/syncthing-backup"]

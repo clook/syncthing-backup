@@ -41,6 +41,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: clook/syncthing-backup
+          # Otherwise semver tag pushes also move `latest`, which must follow main only.
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.get_version.outputs.VERSION }},enable={{is_default_branch}}
@@ -63,4 +65,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Fork PRs get a read-only cache token; a failed cache export must not fail the build.
+          cache-to: type=gha,mode=max,ignore-error=true

@@ -91,8 +91,13 @@ checksumming filesystem or regular `restic check` runs.
 
 ## Deployment
 
-Images: `clook/syncthing-backup:latest` (main) and `clook/syncthing-backup:X.Y.Z` (the version in
-`Cargo.toml`), for `linux/amd64` and `linux/arm64`.
+Images, for `linux/amd64` and `linux/arm64`:
+- `latest`: the head of `main`.
+- `X.Y.Z`: the version in `Cargo.toml`. Every push to `main` rebuilds it until the version is bumped, so
+  it can change; a `vX.Y.Z` git tag publishes it again from that tag.
+- `X.Y`: the newest `vX.Y.*` git tag.
+
+To pin an image that never changes, use its digest (`clook/syncthing-backup@sha256:…`).
 
 **Run the porter with Syncthing's uid and gid.** It deletes the files Syncthing received, so it needs the
 same permissions on them, and the files it writes on the destination should belong to that user too. On

@@ -30,7 +30,7 @@
 3. Release profile: `strip = true`, `lto = "thin"`, `codegen-units = 1`. `panic` stays `unwind`, because
    the worker catches a mover panic (`run_worker` in `src/main.rs`).
 4. Runtime `alpine:3.24` without `ca-certificates` (reqwest uses `rustls-tls`, which bundles
-   `webpki-roots`, in `Cargo.lock`; Syncthing is reached over HTTP). `ENTRYPOINT ["/app/syncthing-backup"]`.
+   `webpki-roots`, in `Cargo.lock`; Syncthing is reached over HTTP). `CMD ["/app/syncthing-backup"]` (amended before merge after review 0003: `ENTRYPOINT` made `docker run <image> sh` start a second porter).
    No `USER` in the image: the porter must run with Syncthing's uid/gid, set by the deployment (README).
 5. Pinned images: `rust:1.99.0-alpine3.24` (2026-10-04) and `tonistiigi/xx:1.10.0` (2026-10-12), the
    newest releases at least two weeks old. CI (`ci.yml`) already builds with the latest stable Rust.
@@ -49,3 +49,11 @@
 ## Consequences
 - An arm64 build failure can no longer hide behind emulation slowness, and a PR proves both platforms.
 - Deployments must set the uid/gid (README "Deployment").
+
+## Amendments before merge (review 0003, 2026-10-31)
+This record was amended on its branch before it was merged, after review 0003:
+- `CMD` instead of `ENTRYPOINT` (see Decision).
+- `metadata-action` gets `flavor: latest=false`: by default, `type=semver` tag pushes also move `latest`,
+  which contradicts "`latest` on `main`" above (docker/metadata-action README @ v6.2.0, "Latest tag",
+  retrieved 2026-10-31, per the review agent; **unverified** by Claude directly).
+- `cache-to` gets `ignore-error=true`, so a fork PR's read-only cache token cannot fail the build.
