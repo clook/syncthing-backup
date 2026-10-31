@@ -1119,8 +1119,9 @@ mod tests {
         let env = env();
         let old = backed_up(&env, "Backups/app.db", b"version 1");
         let compared = FileId::at(&old).unwrap();
-        // Another file took the name since it was compared (e.g. remount, external tool).
-        fs::remove_file(&old).unwrap();
+        // Another file took the name since it was compared (e.g. remount, external tool). The
+        // compared one is moved aside, not deleted: ext4 would reuse its inode number.
+        fs::rename(&old, env.dst.join("aside.db")).unwrap();
         fs::write(&old, b"someone else").unwrap();
         let j = job(&env, "Backups/app.db", b"version 2");
         let mut f = File::open(&j.src).unwrap();
